@@ -1,0 +1,152 @@
+const std = @import("std");
+const Value = @import("value.zig").Value;
+
+pub const Opcode = enum(u8) {
+    @"return",
+    constant,
+    constant_long,
+};
+
+pub const LineRun = struct {
+    line: usize,
+    count: usize,
+};
+
+pub const Chunk = struct {
+    code: std.ArrayList(u8),
+    constants: std.ArrayList(Value),
+    lines: std.ArrayList(LineRun),
+
+    pub const empty: Chunk = .{
+        .code = .empty,
+        .constants = .empty,
+        .lines = .empty,
+    };
+
+    pub fn addConstant(self: *Chunk, allocator: std.mem.Allocator, value: Value) !usize {
+        std.debug.assert(self.constants.items.len < std.math.maxInt(u24));
+        try self.constants.append(allocator, value);
+        return self.constants.items.len - 1;
+    }
+
+    /// Append raw bytes to code and update RLE runs (counts are the same as bytes)
+    fn appendBytes(self: *Chunk, allocator: std.mem.Allocator, bytes: []const u8, line: usize) !void {
+        for (bytes) |b| try self.code.append(allocator, b);
+
+        // add to the last run if on the same line; else start a new run
+        if (self.lines.items.len == 0) {
+            try self.lines.append(allocator, .{ .line = line, .count = bytes.len });
+        } else {
+            var last = &self.lines.items[self.lines.items.len - 1];
+            if (last.line == line) {
+                last.count += bytes.len;
+            } else {
+                try self.lines.append(allocator, .{ .line = line, .count = bytes.len });
+            }
+        }
+    }
+
+    pub fn addOpcode(self: *Chunk, allocator: std.mem.Allocator, op: Opcode, line: usize) !void {
+        const b: [1]u8 = .{@intFromEnum(op)};
+        try self.appendBytes(allocator, b[0..], line);
+    }
+
+    pub fn addConst(self: *Chunk, allocator: std.mem.Allocator, value: Value, line: usize) !void {
+        const index = try self.addConstant(allocator, value);
+
+        if (index <= std.math.maxInt(u8)) {
+            var bytes: [2]u8 = .{ @intFromEnum(Opcode.constant), @truncate(index) };
+            try self.appendBytes(allocator, bytes[0..], line);
+        } else {
+            const int_val: usize = index;
+            const b0: u8 = @truncate(int_val & 0xFF);
+            const b1: u8 = @truncate((int_val >> 8) & 0xFF);
+            const b2: u8 = @truncate((int_val >> 16) & 0xFF);
+
+            var bytes: [4]u8 = .{
+                @intFromEnum(Opcode.constant_long),
+                b0,
+                b1,
+                b2,
+            };
+            try self.appendBytes(allocator, bytes[0..], line);
+        }
+    }
+
+    /// Returns the source line for the given byte offset into `code`
+    pub fn getLine(self: *const Chunk, byte_offset: usize) usize {
+        std.debug.assert(byte_offset < self.code.items.len);
+
+        var acc: usize = 0;
+        var i: usize = 0;
+        while (i < self.lines.items.len) : (i += 1) {
+            const run = self.lines.items[i];
+            if (byte_offset < acc + run.count) return run.line;
+            acc += run.count;
+        }
+
+        return 0;
+    }
+
+    pub fn serialize(self: *const Chunk, allocator: std.mem.Allocator) !std.ArrayList(u8) {
+        // A simple serialization:
+        // 1: [code_len: u32 (little_endian)]
+        // 2: [code_bytes: []u8]
+        // 3: [runs_len: u32 (little_endian)]
+        // 4: [for each run: { line: u32(little), count: u32(little)}]
+        var out: std.ArrayList(u8) = .empty;
+
+        // Write code_len
+        const code_len_u32: u32 = @truncate(self.code.items.len);
+        var tmp: [4]u8 = .{
+            @truncate(code_len_u32 & 0xFF),
+            @truncate((code_len_u32 >> 8) & 0xFF),
+            @truncate((code_len_u32 >> 16) & 0xFF),
+            @truncate((code_len_u32 >> 24) & 0xFF),
+        };
+        for (tmp) |b| try out.append(allocator, b);
+
+        // Write code bytes
+        for (self.code.items) |b| try out.append(allocator, b);
+
+        // Write runs_len
+        const runs_len_u32: u32 = @truncate(self.lines.items.len);
+        tmp = .{
+            @truncate(runs_len_u32 & 0xFF),
+            @truncate((runs_len_u32 >> 8) & 0xFF),
+            @truncate((runs_len_u32 >> 16) & 0xFF),
+            @truncate((runs_len_u32 >> 24) & 0xFF),
+        };
+        for (tmp) |b| try out.append(allocator, b);
+
+        // Write for each run -> u32 line, u32 count (both little-endian)
+        var buf: [4]u8 = undefined;
+        for (self.lines.items) |run| {
+            const line_u32: u32 = @truncate(run.line);
+            buf = .{
+                @truncate(line_u32 & 0xFF),
+                @truncate((line_u32 >> 8) & 0xFF),
+                @truncate((line_u32 >> 16) & 0xFF),
+                @truncate((line_u32 >> 24) & 0xFF),
+            };
+            for (buf) |b| try out.append(allocator, b);
+
+            const count_u32: u32 = @truncate(run.count);
+            buf = .{
+                @truncate(count_u32 & 0xFF),
+                @truncate((count_u32 >> 8) & 0xFF),
+                @truncate((count_u32 >> 16) & 0xFF),
+                @truncate((count_u32 >> 24) & 0xFF),
+            };
+            for (buf) |b| try out.append(allocator, b);
+        }
+
+        return out;
+    }
+
+    pub fn deinit(self: *Chunk, allocator: std.mem.Allocator) void {
+        self.code.deinit(allocator);
+        self.constants.deinit(allocator);
+        self.lines.deinit(allocator);
+    }
+};
