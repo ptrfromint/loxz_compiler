@@ -1,5 +1,6 @@
 const std = @import("std");
 const Chunk = @import("bytecode.zig").Chunk;
+const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
 const debug = @import("debug.zig");
 
 pub fn main() !void {
@@ -10,14 +11,14 @@ pub fn main() !void {
     var chunk: Chunk = .empty;
     defer chunk.deinit(allocator);
 
+    try chunk.addConst(allocator, .{ .float = 6.7 }, 123);
+    try chunk.addOpcode(allocator, .negate, 123);
+    try chunk.addConst(allocator, .{ .float = 6.7 }, 123);
+    try chunk.addOpcode(allocator, .multiply, 123);
     try chunk.addOpcode(allocator, .@"return", 123);
-    for (0..300) |i| {
-        try chunk.addConst(allocator, .{ .float = @floatFromInt(i) }, @intCast(i / 10 + 10));
-    }
 
-    debug.printChunk(&chunk, "test chunk");
+    var vm: VirtualMachine = .init(&chunk, allocator);
+    defer vm.deinit();
 
-    var serialized = try chunk.serialize(allocator);
-    defer serialized.deinit(allocator);
-    std.debug.print("Serialized chunk size: {} bytes\n", .{serialized.items.len});
+    try vm.run();
 }

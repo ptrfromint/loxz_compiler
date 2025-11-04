@@ -19,7 +19,7 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
     const op: Opcode = @enumFromInt(op_byte);
 
     switch (op) {
-        .@"return" => {
+        .@"return", .negate, .add, .subtract, .divide, .multiply => {
             std.debug.print("{s}\n", .{@tagName(op)});
             return offset + 1;
         },

@@ -1,8 +1,14 @@
 const std = @import("std");
 const Value = @import("value.zig").Value;
+const bit_utils = @import("util.zig");
 
 pub const Opcode = enum(u8) {
     @"return",
+    negate,
+    add,
+    subtract,
+    divide,
+    multiply,
     constant,
     constant_long,
 };
@@ -59,16 +65,8 @@ pub const Chunk = struct {
             try self.appendBytes(allocator, bytes[0..], line);
         } else {
             const int_val: usize = index;
-            const b0: u8 = @truncate(int_val & 0xFF);
-            const b1: u8 = @truncate((int_val >> 8) & 0xFF);
-            const b2: u8 = @truncate((int_val >> 16) & 0xFF);
-
-            var bytes: [4]u8 = .{
-                @intFromEnum(Opcode.constant_long),
-                b0,
-                b1,
-                b2,
-            };
+            var bytes: [4]u8 = .{ @intFromEnum(Opcode.constant_long), 0, 0, 0 };
+            bit_utils.fillU24LE(bytes[1..], int_val);
             try self.appendBytes(allocator, bytes[0..], line);
         }
     }
@@ -98,12 +96,8 @@ pub const Chunk = struct {
 
         // Write code_len
         const code_len_u32: u32 = @truncate(self.code.items.len);
-        var tmp: [4]u8 = .{
-            @truncate(code_len_u32 & 0xFF),
-            @truncate((code_len_u32 >> 8) & 0xFF),
-            @truncate((code_len_u32 >> 16) & 0xFF),
-            @truncate((code_len_u32 >> 24) & 0xFF),
-        };
+        var tmp: [4]u8 = undefined;
+        bit_utils.fillU32LE(tmp[0..], code_len_u32);
         for (tmp) |b| try out.append(allocator, b);
 
         // Write code bytes
@@ -111,33 +105,18 @@ pub const Chunk = struct {
 
         // Write runs_len
         const runs_len_u32: u32 = @truncate(self.lines.items.len);
-        tmp = .{
-            @truncate(runs_len_u32 & 0xFF),
-            @truncate((runs_len_u32 >> 8) & 0xFF),
-            @truncate((runs_len_u32 >> 16) & 0xFF),
-            @truncate((runs_len_u32 >> 24) & 0xFF),
-        };
+        bit_utils.fillU32LE(tmp[0..], runs_len_u32);
         for (tmp) |b| try out.append(allocator, b);
 
         // Write for each run -> u32 line, u32 count (both little-endian)
         var buf: [4]u8 = undefined;
         for (self.lines.items) |run| {
             const line_u32: u32 = @truncate(run.line);
-            buf = .{
-                @truncate(line_u32 & 0xFF),
-                @truncate((line_u32 >> 8) & 0xFF),
-                @truncate((line_u32 >> 16) & 0xFF),
-                @truncate((line_u32 >> 24) & 0xFF),
-            };
+            bit_utils.fillU32LE(buf[0..], line_u32);
             for (buf) |b| try out.append(allocator, b);
 
             const count_u32: u32 = @truncate(run.count);
-            buf = .{
-                @truncate(count_u32 & 0xFF),
-                @truncate((count_u32 >> 8) & 0xFF),
-                @truncate((count_u32 >> 16) & 0xFF),
-                @truncate((count_u32 >> 24) & 0xFF),
-            };
+            bit_utils.fillU32LE(buf[0..], count_u32);
             for (buf) |b| try out.append(allocator, b);
         }
 
