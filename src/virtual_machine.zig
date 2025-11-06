@@ -3,6 +3,7 @@ const bytecode = @import("bytecode.zig");
 const util = @import("util.zig");
 const Chunk = bytecode.Chunk;
 const Opcode = bytecode.Opcode;
+const Compiler = @import("compiler.zig").Compiler;
 const Value = @import("value.zig").Value;
 
 pub const InterpreterError = error{ CompilationError, RuntimeError };
@@ -24,6 +25,21 @@ pub const VirtualMachine = struct {
 
     pub fn deinit(self: *VirtualMachine) void {
         self.arena.deinit();
+    }
+
+    pub fn interpret(self: *VirtualMachine, source: []const u8) InterpreterError!void {
+        const allocator = self.arena.allocator();
+
+        var chunk: Chunk = .empty;
+        defer chunk.deinit(allocator);
+
+        var compiler: Compiler = .init(allocator);
+        compiler.compile(source, &chunk) catch return InterpreterError.CompilationError;
+
+        self.chunk = chunk;
+        self.ip = 0;
+
+        try self.run();
     }
 
     pub fn run(self: *VirtualMachine) !void {
