@@ -89,6 +89,10 @@ pub const Scanner = struct {
         };
     }
 
+    pub fn deinit(self: *Scanner) void {
+        self.arena.deinit();
+    }
+
     pub fn scan(self: *Scanner) void {
         var last_line: usize = 0;
 

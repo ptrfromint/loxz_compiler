@@ -1,6 +1,7 @@
 const std = @import("std");
 const Chunk = @import("bytecode.zig").Chunk;
 const Opcode = @import("bytecode.zig").Opcode;
+const Token = @import("scanner.zig").Token;
 
 fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
     const line = chunk.getLine(offset);
@@ -54,4 +55,16 @@ pub fn printChunk(chunk: *const Chunk, name: []const u8) void {
         const next = printInstruction(chunk, offset) catch @panic("printInstruction failed");
         offset = next;
     }
+}
+
+pub fn errorAt(token: Token, msg: []const u8) void {
+    std.debug.print("[line {}] Error", .{token.line});
+
+    switch (token.type) {
+        .eof => std.debug.print(" at end", .{}),
+        .@"error" => {},
+        else => std.debug.print(" at '{s}'", .{token.lexeme}),
+    }
+
+    std.debug.print(": {s}\n", .{msg});
 }

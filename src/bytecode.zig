@@ -22,52 +22,56 @@ pub const Chunk = struct {
     code: std.ArrayList(u8),
     constants: std.ArrayList(Value),
     lines: std.ArrayList(LineRun),
+    allocator: std.mem.Allocator,
 
-    pub const empty: Chunk = .{
-        .code = .empty,
-        .constants = .empty,
-        .lines = .empty,
-    };
+    pub fn init(allocator: std.mem.Allocator) Chunk {
+        return .{
+            .code = .empty,
+            .constants = .empty,
+            .lines = .empty,
+            .allocator = allocator,
+        };
+    }
 
-    pub fn addConstant(self: *Chunk, allocator: std.mem.Allocator, value: Value) !usize {
+    pub fn addConstant(self: *Chunk, value: Value) !usize {
         std.debug.assert(self.constants.items.len < std.math.maxInt(u24));
-        try self.constants.append(allocator, value);
+        try self.constants.append(self.allocator, value);
         return self.constants.items.len - 1;
     }
 
     /// Append raw bytes to code and update RLE runs (counts are the same as bytes)
-    fn appendBytes(self: *Chunk, allocator: std.mem.Allocator, bytes: []const u8, line: usize) !void {
-        for (bytes) |b| try self.code.append(allocator, b);
+    pub fn appendBytes(self: *Chunk, bytes: []const u8, line: usize) !void {
+        for (bytes) |b| try self.code.append(self.allocator, b);
 
         // add to the last run if on the same line; else start a new run
         if (self.lines.items.len == 0) {
-            try self.lines.append(allocator, .{ .line = line, .count = bytes.len });
+            try self.lines.append(self.allocator, .{ .line = line, .count = bytes.len });
         } else {
             var last = &self.lines.items[self.lines.items.len - 1];
             if (last.line == line) {
                 last.count += bytes.len;
             } else {
-                try self.lines.append(allocator, .{ .line = line, .count = bytes.len });
+                try self.lines.append(self.allocator, .{ .line = line, .count = bytes.len });
             }
         }
     }
 
-    pub fn addOpcode(self: *Chunk, allocator: std.mem.Allocator, op: Opcode, line: usize) !void {
+    pub fn addOpcode(self: *Chunk, op: Opcode, line: usize) !void {
         const b: [1]u8 = .{@intFromEnum(op)};
-        try self.appendBytes(allocator, b[0..], line);
+        try self.appendBytes(b[0..], line);
     }
 
-    pub fn addConst(self: *Chunk, allocator: std.mem.Allocator, value: Value, line: usize) !void {
-        const index = try self.addConstant(allocator, value);
+    pub fn addConst(self: *Chunk, value: Value, line: usize) !void {
+        const index = try self.addConstant(value);
 
         if (index <= std.math.maxInt(u8)) {
             var bytes: [2]u8 = .{ @intFromEnum(Opcode.constant), @truncate(index) };
-            try self.appendBytes(allocator, bytes[0..], line);
+            try self.appendBytes(bytes[0..], line);
         } else {
             const int_val: usize = index;
             var bytes: [4]u8 = .{ @intFromEnum(Opcode.constant_long), 0, 0, 0 };
             bit_utils.fillU24LE(bytes[1..], int_val);
-            try self.appendBytes(allocator, bytes[0..], line);
+            try self.appendBytes(bytes[0..], line);
         }
     }
 
@@ -86,7 +90,7 @@ pub const Chunk = struct {
         return 0;
     }
 
-    pub fn serialize(self: *const Chunk, allocator: std.mem.Allocator) !std.ArrayList(u8) {
+    pub fn serialize(self: *const Chunk) !std.ArrayList(u8) {
         // A simple serialization:
         // 1: [code_len: u32 (little_endian)]
         // 2: [code_bytes: []u8]
@@ -98,34 +102,34 @@ pub const Chunk = struct {
         const code_len_u32: u32 = @truncate(self.code.items.len);
         var tmp: [4]u8 = undefined;
         bit_utils.fillU32LE(tmp[0..], code_len_u32);
-        for (tmp) |b| try out.append(allocator, b);
+        for (tmp) |b| try out.append(self.allocator, b);
 
         // Write code bytes
-        for (self.code.items) |b| try out.append(allocator, b);
+        for (self.code.items) |b| try out.append(self.allocator, b);
 
         // Write runs_len
         const runs_len_u32: u32 = @truncate(self.lines.items.len);
         bit_utils.fillU32LE(tmp[0..], runs_len_u32);
-        for (tmp) |b| try out.append(allocator, b);
+        for (tmp) |b| try out.append(self.allocator, b);
 
         // Write for each run -> u32 line, u32 count (both little-endian)
         var buf: [4]u8 = undefined;
         for (self.lines.items) |run| {
             const line_u32: u32 = @truncate(run.line);
             bit_utils.fillU32LE(buf[0..], line_u32);
-            for (buf) |b| try out.append(allocator, b);
+            for (buf) |b| try out.append(self.allocator, b);
 
             const count_u32: u32 = @truncate(run.count);
             bit_utils.fillU32LE(buf[0..], count_u32);
-            for (buf) |b| try out.append(allocator, b);
+            for (buf) |b| try out.append(self.allocator, b);
         }
 
         return out;
     }
 
-    pub fn deinit(self: *Chunk, allocator: std.mem.Allocator) void {
-        self.code.deinit(allocator);
-        self.constants.deinit(allocator);
-        self.lines.deinit(allocator);
+    pub fn deinit(self: *Chunk) void {
+        self.code.deinit(self.allocator);
+        self.constants.deinit(self.allocator);
+        self.lines.deinit(self.allocator);
     }
 };

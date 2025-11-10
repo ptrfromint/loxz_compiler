@@ -1,7 +1,7 @@
 const std = @import("std");
 const Chunk = @import("bytecode.zig").Chunk;
 const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
-const Compiler = @import("scanner.zig").Compiler;
+const Compiler = @import("compiler.zig").Compiler;
 const debug = @import("debug.zig");
 
 fn repl() !void {
@@ -19,6 +19,19 @@ fn repl() !void {
 fn runFile(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const source = try std.fs.cwd().readFileAlloc(allocator, file_path, std.math.maxInt(usize));
     defer allocator.free(source);
+
+    var chunk: Chunk = .init(allocator);
+    defer chunk.deinit();
+
+    var compiler: Compiler = try .init(allocator, source, &chunk);
+    defer compiler.deinit();
+
+    try compiler.compile();
+
+    var vm: VirtualMachine = .init(&chunk, allocator);
+    defer vm.deinit();
+
+    try vm.run();
 }
 
 pub fn main() !void {

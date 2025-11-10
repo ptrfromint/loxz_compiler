@@ -59,8 +59,8 @@ pub const VirtualMachine = struct {
                     self.stack.items[self.stack.items.len - 1] = val;
                 },
                 .add, .subtract, .multiply, .divide => {
-                    const a = self.stack.pop();
                     const b = self.stack.pop();
+                    const a = self.stack.pop();
 
                     switch (a.?) {
                         .float => |val_a| switch (b.?) {
