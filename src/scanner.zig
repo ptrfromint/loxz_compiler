@@ -171,16 +171,44 @@ pub const Scanner = struct {
                 return .make(.less, self.source[self.start..self.current], self.line);
             },
             '"' => {
-                while (self.current < self.source.len and self.source[self.current] != '"') {
-                    if (self.source[self.current] == '\n') self.line += 1;
+                const start_line = self.line;
+
+                // Scan until unescaped closing quote or EOF
+                while (self.current < self.source.len) {
+                    const c = self.source[self.current];
+
+                    if (c == '"') break;
+
+                    if (c == '\\') {
+                        // consume the backslash and the escaped char (if present)
+                        _ = self.advance(); // consume '\'
+                        if (self.current < self.source.len) {
+                            // consume escaped char (\" \\ \n etc.)
+                            _ = self.advance();
+                            // if escaped char was newline you might want to increment line,
+                            // but typically escapes don't change reported line count.
+                            continue;
+                        } else {
+                            // EOF after backslash — unterminated
+                            return .errorToken("Unterminated string", start_line);
+                        }
+                    }
+
+                    if (c == '\n') self.line += 1;
                     _ = self.advance();
                 }
 
-                if (self.current >= self.source.len) return .errorToken("Unterminated string", self.line);
+                if (self.current >= self.source.len) {
+                    return .errorToken("Unterminated string", start_line);
+                }
 
-                _ = self.advance(); // Drop the closing quote
-                return .make(.string, self.source[self.start..self.current], self.line);
+                // consume closing quote
+                _ = self.advance();
+
+                const lexeme = self.source[self.start + 1 .. self.current - 1]; // content between the quotes
+                return .make(.string, lexeme, start_line);
             },
+
             '0'...'9' => {
                 while (std.ascii.isDigit(self.source[self.current])) _ = self.advance();
 

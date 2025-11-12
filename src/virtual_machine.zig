@@ -51,29 +51,56 @@ pub const VirtualMachine = struct {
                 .@"return" => {
                     if (self.stack.pop()) |val| {
                         std.debug.print("Returned: {f}\n", .{val});
-                    } else @panic("Called return with no values in stack!");
+                    } else @panic("Called return with no values in the stack!");
                     return;
                 },
                 .negate => {
-                    const val: Value = .{ .float = -self.stack.items[self.stack.items.len - 1].float };
-                    self.stack.items[self.stack.items.len - 1] = val;
+                    const value = self.stack.items[self.stack.items.len - 1];
+
+                    switch (value) {
+                        .float => |val| self.stack.items[self.stack.items.len - 1] = .{ .float = -val },
+                        else => @panic("'negate' called on an invalid operand."),
+                    }
                 },
-                .add, .subtract, .multiply, .divide => {
+                .not => {
+                    const value = self.stack.items[self.stack.items.len - 1];
+
+                    switch (value) {
+                        .boolean => |val| self.stack.items[self.stack.items.len - 1] = .{ .boolean = !val },
+                        .nil => self.stack.items[self.stack.items.len - 1] = .{ .boolean = true },
+                        else => @panic("'not' called on an invalid operand."),
+                    }
+                },
+                .add, .subtract, .multiply, .divide, .less, .greater => {
                     const b = self.stack.pop();
                     const a = self.stack.pop();
 
                     switch (a.?) {
                         .float => |val_a| switch (b.?) {
-                            .float => |val_b| try self.stack.append(allocator, .{
-                                .float = switch (instr) {
-                                    .add => val_a + val_b,
-                                    .subtract => val_a - val_b,
-                                    .multiply => val_a * val_b,
-                                    .divide => if (val_b == 0) @panic("Can't divide by zero") else val_a / val_b,
-                                    else => unreachable,
+                            .float => |val_b| switch (instr) {
+                                .add => try self.stack.append(allocator, .{ .float = val_a + val_b }),
+                                .subtract => try self.stack.append(allocator, .{ .float = val_a - val_b }),
+                                .multiply => try self.stack.append(allocator, .{ .float = val_a * val_b }),
+                                .divide => if (val_b == 0) @panic("Can't divide by zero") else {
+                                    try self.stack.append(allocator, .{ .float = val_a / val_b });
                                 },
-                            }),
+                                .less => try self.stack.append(allocator, .{ .boolean = val_a < val_b }),
+                                .greater => try self.stack.append(allocator, .{ .boolean = val_a > val_b }),
+                                else => unreachable,
+                            },
+                            else => @panic("Binary operation called on number and non-number."),
                         },
+                        .obj => |obj_a| switch (b.?) {
+                            .obj => |obj_b| switch (instr) {
+                                .add => {
+                                    const new_obj = try concatStrings(allocator, obj_a, obj_b);
+                                    try self.stack.append(allocator, .{ .obj = new_obj });
+                                },
+                                else => @panic("Non-add operation called on two strings."),
+                            },
+                            else => @panic("Binary operation called on string and non-string"),
+                        },
+                        else => @panic("Binary opeartion called on non-number or non-string."),
                     }
                 },
                 .constant => {
@@ -89,7 +116,53 @@ pub const VirtualMachine = struct {
 
                     self.ip += 3;
                 },
+                .false => try self.stack.append(allocator, .{ .boolean = false }),
+                .true => try self.stack.append(allocator, .{ .boolean = true }),
+                .nil => try self.stack.append(allocator, .{ .nil = {} }),
+                .equal => {
+                    const b = self.stack.pop();
+                    const a = self.stack.pop();
+                    std.debug.assert(a != null and b != null);
+
+                    switch (a.?) {
+                        .float => |a_val| switch (b.?) {
+                            .float => |b_val| try self.stack.append(allocator, .{ .boolean = a_val == b_val }),
+                            else => try self.stack.append(allocator, .{ .boolean = false }),
+                        },
+                        .boolean => |a_val| switch (b.?) {
+                            .boolean => |b_val| try self.stack.append(allocator, .{ .boolean = a_val == b_val }),
+                            else => try self.stack.append(allocator, .{ .boolean = false }),
+                        },
+                        .nil => try self.stack.append(allocator, .{ .boolean = false }),
+                        .obj => |obj_a| switch (obj_a.*) {
+                            .string => |str_a| switch (b.?) {
+                                .obj => |obj_b| switch (obj_b.*) {
+                                    .string => |str_b| {
+                                        const equal = std.mem.eql(u8, str_a.str, str_b.str);
+                                        try self.stack.append(allocator, .{ .boolean = equal });
+                                    },
+                                },
+                                else => @panic("Tried comparing string and non-string."),
+                            },
+                        },
+                    }
+                },
             }
         }
+    }
+
+    fn concatStrings(allocator: std.mem.Allocator, obj_a: *Value.Obj, obj_b: *Value.Obj) !*Value.Obj {
+        switch (obj_a.*) {
+            .string => |str_a| switch (obj_b.*) {
+                .string => |str_b| {
+                    const new_str = try std.mem.concat(allocator, u8, &.{ str_a.str, str_b.str });
+                    const obj = try allocator.create(Value.Obj);
+                    obj.* = .{ .string = .{ .str = new_str } };
+                    return obj;
+                },
+            },
+        }
+
+        unreachable;
     }
 };

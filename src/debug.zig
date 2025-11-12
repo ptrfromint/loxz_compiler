@@ -20,10 +20,6 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
     const op: Opcode = @enumFromInt(op_byte);
 
     switch (op) {
-        .@"return", .negate, .add, .subtract, .divide, .multiply => {
-            std.debug.print("{s}\n", .{@tagName(op)});
-            return offset + 1;
-        },
         .constant => {
             if (offset + 1 >= code_len) @panic("truncated constant");
             const index = chunk.code.items[offset + 1];
@@ -40,6 +36,10 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
             const val = chunk.constants.items[index];
             std.debug.print("{s}, index: {}, '{f}'\n", .{ @tagName(op), index, val });
             return offset + 4;
+        },
+        else => {
+            std.debug.print("{s}\n", .{@tagName(op)});
+            return offset + 1;
         },
     }
 }

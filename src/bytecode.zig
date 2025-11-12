@@ -11,6 +11,13 @@ pub const Opcode = enum(u8) {
     multiply,
     constant,
     constant_long,
+    nil,
+    false,
+    true,
+    not,
+    equal,
+    greater,
+    less,
 };
 
 pub const LineRun = struct {

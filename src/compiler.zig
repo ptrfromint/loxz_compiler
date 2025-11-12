@@ -127,6 +127,7 @@ pub const Compiler = struct {
 
         switch (op_type) {
             .minus => try self.emitBytes(&.{@intFromEnum(Opcode.negate)}),
+            .bang => try self.emitBytes(&.{@intFromEnum(Opcode.not)}),
             else => @panic("Called unary on operator other than minus."),
         }
     }
@@ -142,8 +143,33 @@ pub const Compiler = struct {
             .minus => try self.emitBytes(&.{@intFromEnum(Opcode.subtract)}),
             .star => try self.emitBytes(&.{@intFromEnum(Opcode.multiply)}),
             .slash => try self.emitBytes(&.{@intFromEnum(Opcode.divide)}),
+            .equal_equal => try self.emitBytes(&.{@intFromEnum(Opcode.equal)}),
+            .greater => try self.emitBytes(&.{@intFromEnum(Opcode.greater)}),
+            .less => try self.emitBytes(&.{@intFromEnum(Opcode.less)}),
+            .bang_equal => try self.emitBytes(&.{ @intFromEnum(Opcode.equal), @intFromEnum(Opcode.not) }),
+            .greater_equal => try self.emitBytes(&.{ @intFromEnum(Opcode.less), @intFromEnum(Opcode.not) }),
+            .less_equal => try self.emitBytes(&.{ @intFromEnum(Opcode.greater), @intFromEnum(Opcode.not) }),
             else => @panic("Calling binary on operator that doesn't support it."),
         }
+    }
+
+    fn literal(self: *Compiler) !void {
+        std.debug.assert(self.parser.previous != null);
+        const op_type = self.parser.previous.?.type;
+
+        switch (op_type) {
+            .false => try self.emitBytes(&.{@intFromEnum(Opcode.false)}),
+            .true => try self.emitBytes(&.{@intFromEnum(Opcode.true)}),
+            .nil => try self.emitBytes(&.{@intFromEnum(Opcode.nil)}),
+            else => @panic("Literal expression expected."),
+        }
+    }
+
+    fn string(self: *Compiler) !void {
+        const allocator = self.arena.allocator();
+        const obj = try allocator.create(Value.Obj);
+        obj.* = .{ .string = .{ .str = try allocator.dupe(u8, self.parser.previous.?.lexeme) } };
+        try self.emitConstant(.{ .obj = obj });
     }
 
     fn getRule(tok_type: Token.Type) Parser.Rule {
@@ -154,6 +180,17 @@ pub const Compiler = struct {
             .slash => .{ .prefix = null, .infix = Compiler.binary, .precedence = .factor },
             .star => .{ .prefix = null, .infix = Compiler.binary, .precedence = .factor },
             .number => .{ .prefix = Compiler.number, .infix = null, .precedence = .none },
+            .true => .{ .prefix = Compiler.literal, .infix = null, .precedence = .none },
+            .false => .{ .prefix = Compiler.literal, .infix = null, .precedence = .none },
+            .nil => .{ .prefix = Compiler.literal, .infix = null, .precedence = .none },
+            .bang => .{ .prefix = Compiler.unary, .infix = null, .precedence = .none },
+            .bang_equal => .{ .prefix = null, .infix = binary, .precedence = .equality },
+            .equal_equal => .{ .prefix = null, .infix = binary, .precedence = .equality },
+            .greater => .{ .prefix = null, .infix = binary, .precedence = .comparison },
+            .greater_equal => .{ .prefix = null, .infix = binary, .precedence = .comparison },
+            .less => .{ .prefix = null, .infix = binary, .precedence = .comparison },
+            .less_equal => .{ .prefix = null, .infix = binary, .precedence = .comparison },
+            .string => .{ .prefix = Compiler.string, .infix = null, .precedence = .none },
             else => .{ .prefix = null, .infix = null, .precedence = .none },
         };
     }
