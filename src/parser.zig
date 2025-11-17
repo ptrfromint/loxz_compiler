@@ -9,9 +9,11 @@ pub const Parser = struct {
     previous: ?Token,
     scanner: *Scanner,
 
+    const ErrorStack = error{ InvalidCharacter, OutOfMemory } || Compiler.Error;
+
     pub const Rule = struct {
-        prefix: ?*const fn (compiler: *Compiler) error{ InvalidCharacter, OutOfMemory }!void,
-        infix: ?*const fn (compiler: *Compiler) error{ InvalidCharacter, OutOfMemory }!void,
+        prefix: ?*const fn (compiler: *Compiler, can_assign: bool) ErrorStack!void,
+        infix: ?*const fn (compiler: *Compiler, can_assign: bool) ErrorStack!void,
         precedence: Compiler.Precedence,
     };
 
@@ -23,23 +25,23 @@ pub const Parser = struct {
         };
     }
 
-    pub fn advance(self: *Parser) void {
+    pub fn advance(self: *Parser) !void {
         self.previous = self.current;
 
         while (true) {
             self.current = self.scanner.scanToken();
             if (self.current) |tok| switch (tok.type) {
-                .@"error" => debug.errorAt(tok, tok.lexeme),
+                .@"error" => try debug.errorAt(tok, tok.lexeme),
                 else => break,
             };
         }
     }
 
-    pub fn consume(self: *Parser, tok_type: Token.Type, msg: []const u8) void {
+    pub fn consume(self: *Parser, tok_type: Token.Type, msg: []const u8) !void {
         if (self.current.?.type == tok_type) {
             return self.advance();
         }
 
-        return debug.errorAt(self.current.?, msg);
+        return try debug.errorAt(self.current.?, msg);
     }
 };

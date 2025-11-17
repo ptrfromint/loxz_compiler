@@ -18,6 +18,14 @@ pub const Opcode = enum(u8) {
     equal,
     greater,
     less,
+    print,
+    pop,
+    make_global,
+    make_global_long,
+    get_global,
+    get_global_long,
+    set_global,
+    set_global_long,
 };
 
 pub const LineRun = struct {

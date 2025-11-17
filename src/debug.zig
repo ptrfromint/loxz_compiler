@@ -1,7 +1,9 @@
 const std = @import("std");
+const util = @import("util.zig");
 const Chunk = @import("bytecode.zig").Chunk;
 const Opcode = @import("bytecode.zig").Opcode;
 const Token = @import("scanner.zig").Token;
+const Compiler = @import("compiler.zig").Compiler;
 
 fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
     const line = chunk.getLine(offset);
@@ -20,19 +22,16 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
     const op: Opcode = @enumFromInt(op_byte);
 
     switch (op) {
-        .constant => {
+        .constant, .make_global, .get_global => {
             if (offset + 1 >= code_len) @panic("truncated constant");
             const index = chunk.code.items[offset + 1];
             const val = chunk.constants.items[@intCast(index)];
             std.debug.print("{s}, index: {}, '{f}'\n", .{ @tagName(op), index, val });
             return offset + 2;
         },
-        .constant_long => {
+        .constant_long, .make_global_long, .get_global_long => {
             if (offset + 3 >= code_len) @panic("truncated constant_long");
-            const b0 = chunk.code.items[offset + 1];
-            const b1 = chunk.code.items[offset + 2];
-            const b2 = chunk.code.items[offset + 3];
-            const index = (@as(usize, b0)) | ((@as(usize, b1) << 8)) | ((@as(usize, b2) << 16));
+            const index = util.readU24LE(chunk.code.items[offset + 1 .. offset + 4]);
             const val = chunk.constants.items[index];
             std.debug.print("{s}, index: {}, '{f}'\n", .{ @tagName(op), index, val });
             return offset + 4;
@@ -57,7 +56,7 @@ pub fn printChunk(chunk: *const Chunk, name: []const u8) void {
     }
 }
 
-pub fn errorAt(token: Token, msg: []const u8) void {
+pub fn errorAt(token: Token, msg: []const u8) !void {
     std.debug.print("[line {}] Error", .{token.line});
 
     switch (token.type) {
@@ -67,4 +66,6 @@ pub fn errorAt(token: Token, msg: []const u8) void {
     }
 
     std.debug.print(": {s}\n", .{msg});
+
+    return Compiler.Error.CompilationError;
 }

@@ -12,6 +12,7 @@ pub const VirtualMachine = struct {
     chunk: *Chunk,
     ip: usize,
     stack: std.ArrayList(Value),
+    globals: std.StringHashMap(Value),
     arena: std.heap.ArenaAllocator,
 
     pub fn init(chunk: *Chunk, allocator: std.mem.Allocator) VirtualMachine {
@@ -19,11 +20,13 @@ pub const VirtualMachine = struct {
             .chunk = chunk,
             .ip = 0,
             .stack = .empty,
+            .globals = .init(allocator),
             .arena = .init(allocator),
         };
     }
 
     pub fn deinit(self: *VirtualMachine) void {
+        self.globals.deinit();
         self.arena.deinit();
     }
 
@@ -49,10 +52,15 @@ pub const VirtualMachine = struct {
             const instr: Opcode = @enumFromInt(self.chunk.code.items[self.ip]);
             switch (instr) {
                 .@"return" => {
-                    if (self.stack.pop()) |val| {
-                        std.debug.print("Returned: {f}\n", .{val});
-                    } else @panic("Called return with no values in the stack!");
                     return;
+                },
+                .pop => {
+                    _ = self.stack.pop();
+                },
+                .print => {
+                    if (self.stack.pop()) |val| {
+                        std.debug.print("{f}\n", .{val});
+                    } else @panic("Called print with no values in the stack!");
                 },
                 .negate => {
                     const value = self.stack.items[self.stack.items.len - 1];
@@ -111,10 +119,77 @@ pub const VirtualMachine = struct {
                     self.ip += 1;
                 },
                 .constant_long => {
-                    const long_constant = self.chunk.constants.items[self.ip];
-                    try self.stack.append(allocator, long_constant);
+                    const const_index = util.readU24LE(self.chunk.code.items[self.ip + 1 .. self.ip + 4]);
+                    const constant = self.chunk.constants.items[const_index];
+                    try self.stack.append(allocator, constant);
 
-                    self.ip += 3;
+                    self.ip += 4;
+                },
+                .make_global => {
+                    const global_index: usize = @intCast(self.chunk.code.items[self.ip + 1]);
+                    const global = self.chunk.constants.items[global_index];
+                    if (self.stack.pop()) |val| {
+                        try self.globals.put(global.obj.string.str, val);
+                    } else @panic("Called make global with no value in the stack for it.");
+
+                    self.ip += 1;
+                },
+                .make_global_long => {
+                    const global_index = util.readU24LE(self.chunk.code.items[self.ip + 1 .. self.ip + 4]);
+                    const global = self.chunk.constants.items[global_index];
+                    if (self.stack.pop()) |val| {
+                        try self.globals.put(global.obj.string.str, val);
+                    } else @panic("Called make global with no value in the stack for it.");
+
+                    self.ip += 4;
+                },
+                .get_global => {
+                    const global_index: usize = @intCast(self.chunk.code.items[self.ip + 1]);
+                    const global = self.chunk.constants.items[global_index];
+
+                    if (!self.globals.contains(global.obj.string.str)) {
+                        std.debug.print("Undefined variable \"{s}\".", .{global.obj.string.str});
+                        return InterpreterError.RuntimeError;
+                    }
+
+                    try self.stack.append(allocator, self.globals.get(global.obj.string.str).?);
+                    self.ip += 1;
+                },
+                .get_global_long => {
+                    const global_index = util.readU24LE(self.chunk.code.items[self.ip + 1 .. self.ip + 4]);
+                    const global = self.chunk.constants.items[global_index];
+
+                    if (!self.globals.contains(global.obj.string.str)) {
+                        std.debug.print("Undefined variable \"{s}\".", .{global.obj.string.str});
+                        return InterpreterError.RuntimeError;
+                    }
+
+                    try self.stack.append(allocator, self.globals.get(global.obj.string.str).?);
+                    self.ip += 4;
+                },
+                .set_global => {
+                    const global_index: usize = @intCast(self.chunk.code.items[self.ip + 1]);
+                    const global = self.chunk.constants.items[global_index];
+
+                    if (!self.globals.contains(global.obj.string.str)) {
+                        std.debug.print("Undefined variable \"{s}\".", .{global.obj.string.str});
+                        return InterpreterError.RuntimeError;
+                    }
+
+                    try self.globals.put(global.obj.string.str, self.stack.getLast());
+                    self.ip += 1;
+                },
+                .set_global_long => {
+                    const global_index = util.readU24LE(self.chunk.code.items[self.ip + 1 .. self.ip + 4]);
+                    const global = self.chunk.constants.items[global_index];
+
+                    if (!self.globals.contains(global.obj.string.str)) {
+                        std.debug.print("Undefined variable \"{s}\".", .{global.obj.string.str});
+                        return InterpreterError.RuntimeError;
+                    }
+
+                    try self.globals.put(global.obj.string.str, self.stack.getLast());
+                    self.ip += 4;
                 },
                 .false => try self.stack.append(allocator, .{ .boolean = false }),
                 .true => try self.stack.append(allocator, .{ .boolean = true }),
