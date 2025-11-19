@@ -13,11 +13,29 @@ const Opcode = bytecode.Opcode;
 const debug = @import("debug.zig");
 const utils = @import("util.zig");
 
+const CompilerErrorSet = error{ CompilationError, OutOfMemory, InvalidCharacter };
+
+pub const Scope = struct {
+    pub const Local = struct {
+        name: Token,
+        depth: ?usize,
+    };
+
+    locals: std.ArrayList(Local),
+    depth: usize,
+
+    pub const empty_global: Scope = .{
+        .locals = .empty,
+        .depth = 0,
+    };
+};
+
 pub const Compiler = struct {
     arena: std.heap.ArenaAllocator,
     scanner: *Scanner,
     parser: *Parser,
     current_chunk: *Chunk,
+    current_scope: *Scope,
 
     pub const Error = error{CompilationError};
 
@@ -45,11 +63,15 @@ pub const Compiler = struct {
         const parser = try alloc.create(Parser);
         parser.* = .init(scanner);
 
+        const scope = try alloc.create(Scope);
+        scope.* = .empty_global;
+
         return .{
             .arena = arena,
             .scanner = scanner,
             .parser = parser,
             .current_chunk = chunk,
+            .current_scope = scope,
         };
     }
 
@@ -86,7 +108,7 @@ pub const Compiler = struct {
         try self.emitBytes(&.{@intFromEnum(Opcode.@"return")});
     }
 
-    fn declaration(self: *Compiler) !void {
+    fn declaration(self: *Compiler) CompilerErrorSet!void {
         if (try self.match(.@"var")) {
             try self.varDeclaration();
         } else {
@@ -110,9 +132,36 @@ pub const Compiler = struct {
     fn statement(self: *Compiler) !void {
         if (try self.match(.print)) {
             try self.printStatement();
+        } else if (try self.match(.left_brace)) {
+            try self.startScope();
+            try self.block();
+            try self.endScope();
         } else {
             try self.expressionStatement();
         }
+    }
+
+    fn startScope(self: *Compiler) !void {
+        self.current_scope.depth += 1;
+    }
+
+    fn endScope(self: *Compiler) !void {
+        self.current_scope.depth -= 1;
+
+        for (self.current_scope.locals.items) |local| {
+            if (local.depth.? > self.current_scope.depth) {
+                _ = self.current_scope.locals.pop();
+                try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+            }
+        }
+    }
+
+    fn block(self: *Compiler) !void {
+        while (!self.check(.right_brace) and !self.check(.eof)) {
+            try self.declaration();
+        }
+
+        try self.parser.consume(.right_brace, "Expected '}' after block.");
     }
 
     fn printStatement(self: *Compiler) !void {
@@ -147,10 +196,40 @@ pub const Compiler = struct {
 
     fn parseVariable(self: *Compiler, err_msg: []const u8) !usize {
         try self.parser.consume(.identifier, err_msg);
+
+        try self.declareVariable();
+        if (self.current_scope.depth > 0) return 0;
+
         return self.identifierConstant(self.parser.previous.?);
     }
 
+    fn declareVariable(self: *Compiler) !void {
+        // Global variables are implicitly declared already
+        if (self.current_scope.depth == 0) return;
+
+        if (self.current_scope.locals.items.len < 1) return try self.addLocal(self.parser.previous.?);
+
+        const var_name = self.parser.previous.?;
+        var i: usize = self.current_scope.locals.items.len - 1;
+        while (i >= 0) : (i -= 1) {
+            const local = self.current_scope.locals.items[i];
+            if (local.depth != null and local.depth.? < self.current_scope.depth) {
+                break;
+            }
+
+            if (std.mem.eql(u8, var_name.lexeme, local.name.lexeme)) {
+                try debug.errorAt(var_name, "A variable with this name is already declared.");
+            }
+        }
+
+        try self.addLocal(self.parser.previous.?);
+    }
+
     fn defineVariable(self: *Compiler, global: usize) !void {
+        if (self.current_scope.depth > 0) {
+            return self.markInitialized();
+        }
+
         if (global <= std.math.maxInt(u8)) {
             var bytes: [2]u8 = .{ @intFromEnum(Opcode.make_global), @truncate(global) };
             try self.emitBytes(bytes[0..]);
@@ -161,24 +240,54 @@ pub const Compiler = struct {
         }
     }
 
-    fn emitGetVariable(self: *Compiler, global: usize) !void {
-        if (global <= std.math.maxInt(u8)) {
-            var bytes: [2]u8 = .{ @intFromEnum(Opcode.get_global), @truncate(global) };
-            try self.emitBytes(bytes[0..]);
-        } else {
-            var bytes: [4]u8 = .{ @intFromEnum(Opcode.get_global_long), 0, 0, 0 };
-            utils.fillU24LE(bytes[1..], global);
-            try self.emitBytes(bytes[0..]);
-        }
+    fn addLocal(self: *Compiler, name: Token) !void {
+        const allocator = self.arena.allocator();
+
+        try self.current_scope.locals.append(allocator, .{
+            .name = name,
+            .depth = null,
+        });
     }
 
-    fn emitSetVariable(self: *Compiler, global: usize) !void {
-        if (global <= std.math.maxInt(u8)) {
-            var bytes: [2]u8 = .{ @intFromEnum(Opcode.set_global), @truncate(global) };
+    fn markInitialized(self: *Compiler) !void {
+        if (self.current_scope.locals.items.len < 1) return;
+        const last_index = self.current_scope.locals.items.len - 1;
+        self.current_scope.locals.items[last_index].depth = self.current_scope.depth;
+    }
+
+    fn emitVariableOp(
+        self: *Compiler,
+        index: usize,
+        comptime op: enum { set, get },
+        comptime scope: enum { global, local },
+    ) !void {
+        const short_op = switch (op) {
+            .get => switch (scope) {
+                .global => Opcode.get_global,
+                .local => Opcode.get_local,
+            },
+            .set => switch (scope) {
+                .global => Opcode.set_global,
+                .local => Opcode.set_local,
+            },
+        };
+        const long_op = switch (op) {
+            .get => switch (scope) {
+                .global => Opcode.get_global_long,
+                .local => Opcode.get_local_long,
+            },
+            .set => switch (scope) {
+                .global => Opcode.set_global_long,
+                .local => Opcode.set_local_long,
+            },
+        };
+
+        if (index <= std.math.maxInt(u8)) {
+            var bytes: [2]u8 = .{ @intFromEnum(short_op), @truncate(index) };
             try self.emitBytes(bytes[0..]);
         } else {
-            var bytes: [4]u8 = .{ @intFromEnum(Opcode.set_global_long), 0, 0, 0 };
-            utils.fillU24LE(bytes[1..], global);
+            var bytes: [4]u8 = .{ @intFromEnum(long_op), 0, 0, 0 };
+            utils.fillU24LE(bytes[1..], index);
             try self.emitBytes(bytes[0..]);
         }
     }
@@ -289,14 +398,46 @@ pub const Compiler = struct {
     }
 
     fn namedVariable(self: *Compiler, name: Token, can_assign: bool) !void {
-        const global = try self.identifierConstant(name);
+        if (try self.resolveLocal(name)) |local| {
+            if (try self.match(.equal) and can_assign) {
+                try self.expression();
 
-        if (try self.match(.equal) and can_assign) {
-            try self.expression();
-            try self.emitSetVariable(global);
+                std.debug.print("Here\n", .{});
+                try self.emitVariableOp(local, .set, .local);
+            } else {
+                try self.emitVariableOp(local, .get, .local);
+            }
         } else {
-            try self.emitGetVariable(global);
+            const global = try self.identifierConstant(name);
+
+            if (try self.match(.equal) and can_assign) {
+                try self.expression();
+
+                try self.emitVariableOp(global, .set, .global);
+            } else {
+                try self.emitVariableOp(global, .get, .global);
+            }
         }
+    }
+
+    fn resolveLocal(self: *Compiler, name: Token) !?usize {
+        if (self.current_scope.locals.items.len < 1) return null;
+
+        var i = self.current_scope.locals.items.len - 1;
+
+        while (i >= 0) : (i -= 1) {
+            const local = self.current_scope.locals.items[i];
+            if (std.mem.eql(u8, local.name.lexeme, name.lexeme)) {
+                if (local.depth == null) {
+                    try debug.errorAt(local.name, "Can't read local variable in it's own initializer.");
+                }
+                return i;
+            }
+
+            if (i == 0) return null;
+        }
+
+        return null;
     }
 
     fn getRule(tok_type: Token.Type) Parser.Rule {

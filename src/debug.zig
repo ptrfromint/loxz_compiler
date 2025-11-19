@@ -22,14 +22,14 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
     const op: Opcode = @enumFromInt(op_byte);
 
     switch (op) {
-        .constant, .make_global, .get_global => {
+        .constant, .make_global, .get_global, .set_global, .set_local, .get_local => {
             if (offset + 1 >= code_len) @panic("truncated constant");
             const index = chunk.code.items[offset + 1];
             const val = chunk.constants.items[@intCast(index)];
             std.debug.print("{s}, index: {}, '{f}'\n", .{ @tagName(op), index, val });
             return offset + 2;
         },
-        .constant_long, .make_global_long, .get_global_long => {
+        .constant_long, .make_global_long, .get_global_long, .get_local_long, .set_local_long, .set_global_long => {
             if (offset + 3 >= code_len) @panic("truncated constant_long");
             const index = util.readU24LE(chunk.code.items[offset + 1 .. offset + 4]);
             const val = chunk.constants.items[index];
