@@ -11,7 +11,7 @@ const Chunk = bytecode.Chunk;
 const Opcode = bytecode.Opcode;
 
 const debug = @import("debug.zig");
-const utils = @import("util.zig");
+const util = @import("util.zig");
 
 const CompilerErrorSet = error{ CompilationError, OutOfMemory, InvalidCharacter };
 
@@ -129,9 +129,15 @@ pub const Compiler = struct {
         try self.defineVariable(global);
     }
 
-    fn statement(self: *Compiler) !void {
+    fn statement(self: *Compiler) CompilerErrorSet!void {
         if (try self.match(.print)) {
             try self.printStatement();
+        } else if (try self.match(.@"for")) {
+            try self.forStatement();
+        } else if (try self.match(.@"if")) {
+            try self.ifStatement();
+        } else if (try self.match(.@"while")) {
+            try self.whileStatement();
         } else if (try self.match(.left_brace)) {
             try self.startScope();
             try self.block();
@@ -162,6 +168,113 @@ pub const Compiler = struct {
         }
 
         try self.parser.consume(.right_brace, "Expected '}' after block.");
+    }
+
+    fn forStatement(self: *Compiler) !void {
+        try self.startScope();
+
+        try self.parser.consume(.left_paren, "Expected '(' after 'for'.");
+        if (try self.match(.semicolon)) {} else if (try self.match(.@"var")) {
+            try self.varDeclaration();
+        } else {
+            try self.expressionStatement();
+        }
+
+        var loop_start = self.currentChunk().code.items.len;
+
+        var exit_jump: ?usize = null;
+        if (!try self.match(.semicolon)) {
+            try self.expression();
+            try self.parser.consume(.semicolon, "Expected ';' after loop condition.");
+
+            exit_jump = try self.emitPlaceholderJump(.jump_if_false);
+            try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+        }
+
+        if (!try self.match(.right_paren)) {
+            const body_jump = try self.emitPlaceholderJump(.jump);
+
+            const increment_start = self.currentChunk().code.items.len;
+            try self.expression();
+            try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+            try self.parser.consume(.right_paren, "Expected ')' after 'for' clauses.");
+
+            try self.emitLoop(loop_start);
+            loop_start = increment_start;
+            try self.backpatchJumpOp(body_jump);
+        }
+
+        try self.statement();
+
+        try self.emitLoop(loop_start);
+
+        if (exit_jump) |offset| {
+            try self.backpatchJumpOp(offset);
+            try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+        }
+
+        try self.endScope();
+    }
+
+    fn whileStatement(self: *Compiler) !void {
+        const loop_start = self.currentChunk().code.items.len;
+
+        try self.parser.consume(.left_paren, "Expected '(' after 'while'.");
+        try self.expression();
+        try self.parser.consume(.right_paren, "Expected ')' after 'while'.");
+
+        const exitJump = try self.emitPlaceholderJump(.jump_if_false);
+
+        try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+        try self.statement();
+
+        try self.emitLoop(loop_start);
+
+        try self.backpatchJumpOp(exitJump);
+        try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+    }
+
+    fn emitLoop(self: *Compiler, loop_start: usize) !void {
+        try self.emitBytes(&.{@intFromEnum(Opcode.loop)});
+
+        const offset = self.currentChunk().code.items.len - loop_start + 2;
+        if (offset > std.math.maxInt(u16)) @panic("Loop body too large.");
+
+        var bytes: [2]u8 = undefined;
+        util.fillU16LE(&bytes, @intCast(offset));
+        try self.emitBytes(&bytes);
+    }
+
+    fn ifStatement(self: *Compiler) !void {
+        try self.parser.consume(.left_paren, "Expected '(' after 'if'.");
+        try self.expression();
+        try self.parser.consume(.right_paren, "Expected ')' after condition.");
+
+        const then_jump = try self.emitPlaceholderJump(.jump_if_false);
+        try self.emitBytes(&.{@intFromEnum(Opcode.pop)}); // Clean up condition on TRUE path
+        try self.statement(); // Compile 'then' block
+
+        const else_jump = try self.emitPlaceholderJump(.jump);
+        try self.backpatchJumpOp(then_jump);
+        try self.emitBytes(&.{@intFromEnum(Opcode.pop)}); // Clean up condition on FALSE path
+
+        if (try self.match(.@"else")) try self.statement();
+
+        try self.backpatchJumpOp(else_jump);
+    }
+
+    fn emitPlaceholderJump(self: *Compiler, op: Opcode) !usize {
+        try self.emitBytes(&.{ @intFromEnum(op), 0xff, 0xff });
+        return self.currentChunk().code.items.len - 2;
+    }
+
+    fn backpatchJumpOp(self: *Compiler, offset: usize) !void {
+        // NOTE: offset - 2 to account for the bytecode for the jump instruction itself
+        const jump_index = self.currentChunk().code.items.len - offset - 2;
+
+        if (jump_index > std.math.maxInt(u16)) @panic("More than 65536 bytes of code to jump over");
+
+        util.fillU16LE(self.currentChunk().code.items[offset .. offset + 2], jump_index);
     }
 
     fn printStatement(self: *Compiler) !void {
@@ -235,7 +348,7 @@ pub const Compiler = struct {
             try self.emitBytes(bytes[0..]);
         } else {
             var bytes: [4]u8 = .{ @intFromEnum(Opcode.make_global_long), 0, 0, 0 };
-            utils.fillU24LE(bytes[1..], global);
+            util.fillU24LE(bytes[1..], global);
             try self.emitBytes(bytes[0..]);
         }
     }
@@ -287,7 +400,7 @@ pub const Compiler = struct {
             try self.emitBytes(bytes[0..]);
         } else {
             var bytes: [4]u8 = .{ @intFromEnum(long_op), 0, 0, 0 };
-            utils.fillU24LE(bytes[1..], index);
+            util.fillU24LE(bytes[1..], index);
             try self.emitBytes(bytes[0..]);
         }
     }
@@ -397,12 +510,32 @@ pub const Compiler = struct {
         try self.namedVariable(self.parser.previous.?, can_assign);
     }
 
+    fn @"and"(self: *Compiler, can_assign: bool) !void {
+        _ = can_assign;
+        const endJump = try self.emitPlaceholderJump(.jump_if_false);
+
+        try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+        try self.parsePrecedence(.@"and");
+
+        try self.backpatchJumpOp(endJump);
+    }
+
+    fn @"or"(self: *Compiler, can_assign: bool) !void {
+        _ = can_assign;
+        const elseJump = try self.emitPlaceholderJump(.jump_if_false);
+        const endJump = try self.emitPlaceholderJump(.jump);
+
+        try self.backpatchJumpOp(elseJump);
+        try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+
+        try self.parsePrecedence(.@"or");
+        try self.backpatchJumpOp(endJump);
+    }
+
     fn namedVariable(self: *Compiler, name: Token, can_assign: bool) !void {
         if (try self.resolveLocal(name)) |local| {
             if (try self.match(.equal) and can_assign) {
                 try self.expression();
-
-                std.debug.print("Here\n", .{});
                 try self.emitVariableOp(local, .set, .local);
             } else {
                 try self.emitVariableOp(local, .get, .local);
@@ -412,7 +545,6 @@ pub const Compiler = struct {
 
             if (try self.match(.equal) and can_assign) {
                 try self.expression();
-
                 try self.emitVariableOp(global, .set, .global);
             } else {
                 try self.emitVariableOp(global, .get, .global);
@@ -460,7 +592,18 @@ pub const Compiler = struct {
             .less_equal => .{ .prefix = null, .infix = Compiler.binary, .precedence = .comparison },
             .string => .{ .prefix = Compiler.string, .infix = null, .precedence = .none },
             .identifier => .{ .prefix = Compiler.variable, .infix = null, .precedence = .none },
+            .@"and" => .{ .prefix = null, .infix = Compiler.@"and", .precedence = .@"and" },
+            .@"or" => .{ .prefix = null, .infix = Compiler.@"or", .precedence = .@"or" },
             else => .{ .prefix = null, .infix = null, .precedence = .none },
         };
+    }
+
+    pub fn hexdumpCode(self: *Compiler, filename: []const u8) !void {
+        const file = try std.fs.cwd().createFile(filename, .{});
+        defer file.close();
+
+        const bytecode_slice = self.current_chunk.code.items;
+
+        try file.writeAll(bytecode_slice);
     }
 };

@@ -30,6 +30,9 @@ pub const Opcode = enum(u8) {
     get_local_long,
     set_local,
     set_local_long,
+    jump_if_false,
+    jump,
+    loop,
 };
 
 pub const LineRun = struct {

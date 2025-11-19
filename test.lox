@@ -1,9 +1,17 @@
-var a = 20;
-var b = 40;
+var a = 30;
+if (a == 20) {
+  print "yes";
+} else {
+  print "no";
+}
 
-print a + b;
+var i = 1;
+while (i < 6) {
+  print "*" * i;
+  i = i + 1;
+}
 
-{
-	var a = 60;
-	print a + b;
+for (var i = 1; i <= 32; i = i * 2) {
+  print "Power of two: ";
+  print i;
 }

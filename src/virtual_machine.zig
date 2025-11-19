@@ -48,7 +48,7 @@ pub const VirtualMachine = struct {
     pub fn run(self: *VirtualMachine) !void {
         const allocator = self.arena.allocator();
 
-        while (true) : (self.ip += 1) {
+        while (self.ip < self.chunk.code.items.len) {
             const instr: Opcode = @enumFromInt(self.chunk.code.items[self.ip]);
             switch (instr) {
                 .@"return" => {
@@ -56,11 +56,13 @@ pub const VirtualMachine = struct {
                 },
                 .pop => {
                     _ = self.stack.pop();
+                    self.ip += 1;
                 },
                 .print => {
                     if (self.stack.pop()) |val| {
                         std.debug.print("{f}\n", .{val});
                     } else @panic("'print' called with no values in the stack.");
+                    self.ip += 1;
                 },
                 .negate => {
                     const value = self.stack.items[self.stack.items.len - 1];
@@ -69,6 +71,7 @@ pub const VirtualMachine = struct {
                         .float => |val| self.stack.items[self.stack.items.len - 1] = .{ .float = -val },
                         else => @panic("'negate' called on an invalid operand."),
                     }
+                    self.ip += 1;
                 },
                 .not => {
                     const value = self.stack.items[self.stack.items.len - 1];
@@ -78,6 +81,7 @@ pub const VirtualMachine = struct {
                         .nil => self.stack.items[self.stack.items.len - 1] = .{ .boolean = true },
                         else => @panic("'not' called on an invalid operand."),
                     }
+                    self.ip += 1;
                 },
                 .add, .subtract, .multiply, .divide, .less, .greater => {
                     const b = self.stack.pop();
@@ -106,17 +110,34 @@ pub const VirtualMachine = struct {
                                 },
                                 else => @panic("Non-add operation called on two strings."),
                             },
+                            .float => |multiplier| switch (instr) {
+                                .multiply => {
+                                    if (multiplier == 0) @panic("Can't multiply strings by zero!");
+
+                                    const buf_len = obj_a.string.str.len * @as(usize, @intFromFloat(@round(multiplier)));
+                                    const buffer = try allocator.alloc(u8, buf_len);
+                                    for (0..buffer.len) |i| {
+                                        buffer[i] = obj_a.string.str[i % obj_a.string.str.len];
+                                    }
+                                    const obj = try allocator.create(Value.Obj);
+                                    obj.* = .{ .string = .{ .str = buffer } };
+                                    try self.stack.append(allocator, .{ .obj = obj });
+                                },
+                                else => @panic("Can't multiply string with anything other than a number."),
+                            },
                             else => @panic("Binary operation called on string and non-string"),
                         },
                         else => @panic("Binary opeartion called on non-number or non-string."),
                     }
+
+                    self.ip += 1;
                 },
                 .constant => {
                     const const_index: usize = @intCast(self.chunk.code.items[self.ip + 1]);
                     const constant = self.chunk.constants.items[const_index];
                     try self.stack.append(allocator, constant);
 
-                    self.ip += 1;
+                    self.ip += 2;
                 },
                 .constant_long => {
                     const const_index = util.readU24LE(self.chunk.code.items[self.ip + 1 .. self.ip + 4]);
@@ -153,7 +174,7 @@ pub const VirtualMachine = struct {
                     }
 
                     switch (instr) {
-                        .get_global, .set_global, .make_global => self.ip += 1,
+                        .get_global, .set_global, .make_global => self.ip += 2,
                         else => self.ip += 4,
                     }
                 },
@@ -169,13 +190,44 @@ pub const VirtualMachine = struct {
                     }
 
                     switch (instr) {
-                        .get_local, .set_local => self.ip += 1,
+                        .get_local, .set_local => self.ip += 2,
                         else => self.ip += 4,
                     }
                 },
-                .false => try self.stack.append(allocator, .{ .boolean = false }),
-                .true => try self.stack.append(allocator, .{ .boolean = true }),
-                .nil => try self.stack.append(allocator, .{ .nil = {} }),
+                .jump_if_false => {
+                    const offset = util.readU16LE(self.chunk.code.items[self.ip + 1 .. self.ip + 3]);
+                    const value = self.stack.getLast();
+                    const should_jump = switch (value) {
+                        .nil => true,
+                        .boolean => |b| !b,
+                        else => false,
+                    };
+                    if (should_jump) {
+                        self.ip += 3 + offset;
+                    } else {
+                        self.ip += 3;
+                    }
+                },
+                .jump => {
+                    const offset = util.readU16LE(self.chunk.code.items[self.ip + 1 .. self.ip + 3]);
+                    self.ip += 3 + offset;
+                },
+                .loop => {
+                    const offset = util.readU16LE(self.chunk.code.items[self.ip + 1 .. self.ip + 3]);
+                    self.ip = (self.ip + 3) - offset;
+                },
+                .false => {
+                    try self.stack.append(allocator, .{ .boolean = false });
+                    self.ip += 1;
+                },
+                .true => {
+                    try self.stack.append(allocator, .{ .boolean = true });
+                    self.ip += 1;
+                },
+                .nil => {
+                    try self.stack.append(allocator, .{ .nil = {} });
+                    self.ip += 1;
+                },
                 .equal => {
                     const b = self.stack.pop();
                     const a = self.stack.pop();
@@ -203,6 +255,8 @@ pub const VirtualMachine = struct {
                             },
                         },
                     }
+
+                    self.ip += 1;
                 },
             }
         }

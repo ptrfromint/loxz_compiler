@@ -1,5 +1,19 @@
 const std = @import("std");
 
+/// Fill `buf[0..2]` with the little-endian 16-bit representation of `v`.
+pub fn fillU16LE(buf: []u8, v: usize) void {
+    std.debug.assert(buf.len >= 2);
+    buf[0] = @truncate(v & 0xFF);
+    buf[1] = @truncate((v >> 8) & 0xFF);
+}
+
+/// Read a little-endian 16-bit value from `buf[0..2)` and return it as usize.
+pub fn readU16LE(buf: []const u8) usize {
+    std.debug.assert(buf.len >= 2);
+    return ((@as(usize, @intCast(buf[0])) |
+        (@as(usize, @intCast(buf[1])) << 8)));
+}
+
 /// Fill `buf[0..3]` with the little-endian 24-bit representation of `v`.
 pub fn fillU24LE(buf: []u8, v: usize) void {
     std.debug.assert(buf.len >= 3);
