@@ -21,20 +21,12 @@ fn runFile(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const source = try std.fs.cwd().readFileAlloc(allocator, file_path, std.math.maxInt(usize));
     defer allocator.free(source);
 
-    var chunk: Chunk = .init(allocator);
-    defer chunk.deinit();
-
-    var compiler: Compiler = try .init(allocator, source, &chunk);
-    defer compiler.deinit();
-
-    try compiler.compile();
-
-    var vm: VirtualMachine = .init(&chunk, allocator);
+    var vm: VirtualMachine = .init(allocator);
     defer vm.deinit();
 
     // debug.printChunk(&chunk, "debug");
 
-    try vm.run();
+    try vm.interpret(source);
 }
 
 pub fn main() !void {

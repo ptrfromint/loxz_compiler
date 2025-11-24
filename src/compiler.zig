@@ -15,7 +15,15 @@ const util = @import("util.zig");
 
 const CompilerErrorSet = error{ CompilationError, OutOfMemory, InvalidCharacter };
 
-pub const Scope = struct {
+pub const CallFrame = struct {
+    function: *Value.Obj,
+    ip: usize,
+    slot_start: usize,
+};
+
+const FunctionType = enum { function, script };
+
+pub const FunctionState = struct {
     pub const Local = struct {
         name: Token,
         depth: ?usize,
@@ -23,19 +31,15 @@ pub const Scope = struct {
 
     locals: std.ArrayList(Local),
     depth: usize,
-
-    pub const empty_global: Scope = .{
-        .locals = .empty,
-        .depth = 0,
-    };
+    function: *Value.Obj,
+    func_type: FunctionType,
 };
 
 pub const Compiler = struct {
-    arena: std.heap.ArenaAllocator,
+    arena: *std.heap.ArenaAllocator,
     scanner: *Scanner,
     parser: *Parser,
-    current_chunk: *Chunk,
-    current_scope: *Scope,
+    current_function: *FunctionState,
 
     pub const Error = error{CompilationError};
 
@@ -53,9 +57,11 @@ pub const Compiler = struct {
         primary,
     };
 
-    pub fn init(allocator: std.mem.Allocator, source: []const u8, chunk: *Chunk) !Compiler {
-        var arena: std.heap.ArenaAllocator = .init(allocator);
-        const alloc = arena.allocator();
+    pub fn init(allocator: std.mem.Allocator, source: []const u8) !Compiler {
+        const arena_ptr = try allocator.create(std.heap.ArenaAllocator);
+        arena_ptr.* = std.heap.ArenaAllocator.init(allocator);
+
+        const alloc = arena_ptr.allocator();
 
         const scanner = try alloc.create(Scanner);
         scanner.* = .init(alloc, source);
@@ -63,32 +69,42 @@ pub const Compiler = struct {
         const parser = try alloc.create(Parser);
         parser.* = .init(scanner);
 
-        const scope = try alloc.create(Scope);
-        scope.* = .empty_global;
+        const func_state = try alloc.create(FunctionState);
+        func_state.* = .{
+            .locals = .empty,
+            .depth = 0,
+            .function = try Value.Obj.allocFunc(alloc, 0, "main"),
+            .func_type = .script,
+        };
+
+        // Reserve the first slot for the VM
+        try func_state.locals.append(alloc, .{
+            .name = .{ .lexeme = "", .line = 0, .type = .identifier },
+            .depth = 0,
+        });
 
         return .{
-            .arena = arena,
+            .arena = arena_ptr,
             .scanner = scanner,
             .parser = parser,
-            .current_chunk = chunk,
-            .current_scope = scope,
+            .current_function = func_state,
         };
     }
 
     pub fn deinit(self: *Compiler) void {
         self.scanner.deinit();
-        self.arena.allocator().destroy(self.scanner);
 
-        self.arena.allocator().destroy(self.parser);
+        const child_allocator = self.arena.child_allocator;
         self.arena.deinit();
+        child_allocator.destroy(self.arena);
     }
 
-    pub fn compile(self: *Compiler) !void {
+    pub fn compile(self: *Compiler) !*Value.Obj {
         try self.parser.advance();
 
         while (!try self.match(.eof)) try self.declaration();
 
-        try self.endCompiler();
+        return try self.endCompiler();
     }
 
     pub fn emitBytes(self: *Compiler, bytes: []const u8) !void {
@@ -101,11 +117,13 @@ pub const Compiler = struct {
     }
 
     fn currentChunk(self: *Compiler) *Chunk {
-        return self.current_chunk;
+        return &self.current_function.function.function.chunk;
     }
 
-    fn endCompiler(self: *Compiler) !void {
+    fn endCompiler(self: *Compiler) !*Value.Obj {
         try self.emitBytes(&.{@intFromEnum(Opcode.@"return")});
+
+        return self.current_function.function;
     }
 
     fn declaration(self: *Compiler) CompilerErrorSet!void {
@@ -148,15 +166,15 @@ pub const Compiler = struct {
     }
 
     fn startScope(self: *Compiler) !void {
-        self.current_scope.depth += 1;
+        self.current_function.depth += 1;
     }
 
     fn endScope(self: *Compiler) !void {
-        self.current_scope.depth -= 1;
+        self.current_function.depth -= 1;
 
-        for (self.current_scope.locals.items) |local| {
-            if (local.depth.? > self.current_scope.depth) {
-                _ = self.current_scope.locals.pop();
+        for (self.current_function.locals.items) |local| {
+            if (local.depth.? > self.current_function.depth) {
+                _ = self.current_function.locals.pop();
                 try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
             }
         }
@@ -311,22 +329,22 @@ pub const Compiler = struct {
         try self.parser.consume(.identifier, err_msg);
 
         try self.declareVariable();
-        if (self.current_scope.depth > 0) return 0;
+        if (self.current_function.depth > 0) return 0;
 
         return self.identifierConstant(self.parser.previous.?);
     }
 
     fn declareVariable(self: *Compiler) !void {
         // Global variables are implicitly declared already
-        if (self.current_scope.depth == 0) return;
+        if (self.current_function.depth == 0) return;
 
-        if (self.current_scope.locals.items.len < 1) return try self.addLocal(self.parser.previous.?);
+        if (self.current_function.locals.items.len < 1) return try self.addLocal(self.parser.previous.?);
 
         const var_name = self.parser.previous.?;
-        var i: usize = self.current_scope.locals.items.len - 1;
+        var i: usize = self.current_function.locals.items.len - 1;
         while (i >= 0) : (i -= 1) {
-            const local = self.current_scope.locals.items[i];
-            if (local.depth != null and local.depth.? < self.current_scope.depth) {
+            const local = self.current_function.locals.items[i];
+            if (local.depth != null and local.depth.? < self.current_function.depth) {
                 break;
             }
 
@@ -339,7 +357,7 @@ pub const Compiler = struct {
     }
 
     fn defineVariable(self: *Compiler, global: usize) !void {
-        if (self.current_scope.depth > 0) {
+        if (self.current_function.depth > 0) {
             return self.markInitialized();
         }
 
@@ -356,16 +374,16 @@ pub const Compiler = struct {
     fn addLocal(self: *Compiler, name: Token) !void {
         const allocator = self.arena.allocator();
 
-        try self.current_scope.locals.append(allocator, .{
+        try self.current_function.locals.append(allocator, .{
             .name = name,
             .depth = null,
         });
     }
 
     fn markInitialized(self: *Compiler) !void {
-        if (self.current_scope.locals.items.len < 1) return;
-        const last_index = self.current_scope.locals.items.len - 1;
-        self.current_scope.locals.items[last_index].depth = self.current_scope.depth;
+        if (self.current_function.locals.items.len < 1) return;
+        const last_index = self.current_function.locals.items.len - 1;
+        self.current_function.locals.items[last_index].depth = self.current_function.depth;
     }
 
     fn emitVariableOp(
@@ -553,12 +571,12 @@ pub const Compiler = struct {
     }
 
     fn resolveLocal(self: *Compiler, name: Token) !?usize {
-        if (self.current_scope.locals.items.len < 1) return null;
+        if (self.current_function.locals.items.len < 1) return null;
 
-        var i = self.current_scope.locals.items.len - 1;
+        var i = self.current_function.locals.items.len - 1;
 
         while (i >= 0) : (i -= 1) {
-            const local = self.current_scope.locals.items[i];
+            const local = self.current_function.locals.items[i];
             if (std.mem.eql(u8, local.name.lexeme, name.lexeme)) {
                 if (local.depth == null) {
                     try debug.errorAt(local.name, "Can't read local variable in it's own initializer.");
@@ -602,7 +620,7 @@ pub const Compiler = struct {
         const file = try std.fs.cwd().createFile(filename, .{});
         defer file.close();
 
-        const bytecode_slice = self.current_chunk.code.items;
+        const bytecode_slice = self.currentChunk().code.items;
 
         try file.writeAll(bytecode_slice);
     }

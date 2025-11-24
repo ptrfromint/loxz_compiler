@@ -9,15 +9,26 @@ pub const Value = union(enum) {
         function: struct {
             arity: usize,
             chunk: Chunk,
-            name: *Value.Obj,
+            name: ?*Value.Obj,
         },
+
+        pub fn format(this: @This(), w: *std.io.Writer) !void {
+            switch (this) {
+                .string => |val| try w.print("{s}", .{val.str}),
+                .function => |f| try w.print("<fn {s} ({})> [code len {}]", .{
+                    if (f.name) |obj| obj.string.str else "<script>",
+                    f.arity,
+                    f.chunk.code.items.len,
+                }),
+            }
+        }
 
         pub fn allocFunc(allocator: std.mem.Allocator, arity: usize, name: []const u8) !*Value.Obj {
             const func_obj = try allocator.create(Value.Obj);
             func_obj.* = .{ .function = .{
                 .arity = arity,
                 .chunk = .init(allocator),
-                .name = Value.Obj.allocString(allocator, name),
+                .name = try Value.Obj.allocString(allocator, name),
             } };
 
             return func_obj;
@@ -36,7 +47,7 @@ pub const Value = union(enum) {
                     allocator.destroy(self);
                 },
                 .function => |f| {
-                    f.name.free(allocator);
+                    if (f.name) |obj| obj.free(allocator);
                     allocator.destroy(self);
                 },
             }
@@ -53,10 +64,7 @@ pub const Value = union(enum) {
             .nil => try w.print("nil", .{}),
             .float => |val| try w.print("{}", .{val}),
             .boolean => |val| try w.print("{}", .{val}),
-            .obj => |obj| switch (obj.*) {
-                .string => |val| try w.print("{s}", .{val.str}),
-                .function => |f| try w.print("<fn {s} ({})> [code len {}]", .{ f.name.string.str, f.arity, f.chunk.code.items.len }),
-            },
+            .obj => |obj| try w.print("{f}", .{obj.*}),
         }
     }
 };
