@@ -302,9 +302,9 @@ pub const Compiler = struct {
 
     fn identifierConstant(self: *Compiler, name: Token) !usize {
         const allocator = self.arena.allocator();
-        const obj = try allocator.create(Value.Obj);
-        obj.* = .{ .string = .{ .str = try allocator.dupe(u8, name.lexeme) } };
-        return try self.currentChunk().addConstant(.{ .obj = obj });
+        return try self.currentChunk().addConstant(.{
+            .obj = try Value.Obj.allocString(allocator, name.lexeme),
+        });
     }
 
     fn parseVariable(self: *Compiler, err_msg: []const u8) !usize {
@@ -501,9 +501,9 @@ pub const Compiler = struct {
     fn string(self: *Compiler, can_assign: bool) !void {
         _ = can_assign;
         const allocator = self.arena.allocator();
-        const obj = try allocator.create(Value.Obj);
-        obj.* = .{ .string = .{ .str = try allocator.dupe(u8, self.parser.previous.?.lexeme) } };
-        try self.emitConstant(.{ .obj = obj });
+        try self.emitConstant(.{
+            .obj = try Value.Obj.allocString(allocator, self.parser.previous.?.lexeme),
+        });
     }
 
     fn variable(self: *Compiler, can_assign: bool) !void {

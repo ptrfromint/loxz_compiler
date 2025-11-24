@@ -119,9 +119,10 @@ pub const VirtualMachine = struct {
                                     for (0..buffer.len) |i| {
                                         buffer[i] = obj_a.string.str[i % obj_a.string.str.len];
                                     }
-                                    const obj = try allocator.create(Value.Obj);
-                                    obj.* = .{ .string = .{ .str = buffer } };
-                                    try self.stack.append(allocator, .{ .obj = obj });
+
+                                    try self.stack.append(allocator, .{
+                                        .obj = try Value.Obj.allocString(allocator, buffer),
+                                    });
                                 },
                                 else => @panic("Can't multiply string with anything other than a number."),
                             },
@@ -250,9 +251,11 @@ pub const VirtualMachine = struct {
                                         const equal = std.mem.eql(u8, str_a.str, str_b.str);
                                         try self.stack.append(allocator, .{ .boolean = equal });
                                     },
+                                    else => @panic("Tried comparing string and non-string."),
                                 },
                                 else => @panic("Tried comparing string and non-string."),
                             },
+                            else => @panic("Tried comparing objects, which aren't strings."),
                         },
                     }
 
@@ -267,11 +270,12 @@ pub const VirtualMachine = struct {
             .string => |str_a| switch (obj_b.*) {
                 .string => |str_b| {
                     const new_str = try std.mem.concat(allocator, u8, &.{ str_a.str, str_b.str });
-                    const obj = try allocator.create(Value.Obj);
-                    obj.* = .{ .string = .{ .str = new_str } };
-                    return obj;
+
+                    return try Value.Obj.allocString(allocator, new_str);
                 },
+                else => unreachable,
             },
+            else => unreachable,
         }
 
         unreachable;
