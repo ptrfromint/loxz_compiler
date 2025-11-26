@@ -24,8 +24,6 @@ fn runFile(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var vm: VirtualMachine = .init(allocator);
     defer vm.deinit();
 
-    // debug.printChunk(&chunk, "debug");
-
     try vm.interpret(source);
 }
 

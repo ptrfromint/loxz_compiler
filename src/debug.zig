@@ -7,17 +7,17 @@ const Compiler = @import("compiler.zig").Compiler;
 const Value = @import("value.zig").Value;
 
 // ANSI Color codes for terminal output
-const Color = struct {
-    const Reset = "\x1b[0m";
-    const Bold = "\x1b[1m";
-    const Dim = "\x1b[2m";
-    const Red = "\x1b[31m";
-    const Green = "\x1b[32m";
-    const Yellow = "\x1b[33m";
-    const Blue = "\x1b[34m";
-    const Magenta = "\x1b[35m";
-    const Cyan = "\x1b[36m";
-    const White = "\x1b[37m";
+pub const Color = struct {
+    pub const Reset = "\x1b[0m";
+    pub const Bold = "\x1b[1m";
+    pub const Dim = "\x1b[2m";
+    pub const Red = "\x1b[31m";
+    pub const Green = "\x1b[32m";
+    pub const Yellow = "\x1b[33m";
+    pub const Blue = "\x1b[34m";
+    pub const Magenta = "\x1b[35m";
+    pub const Cyan = "\x1b[36m";
+    pub const White = "\x1b[37m";
 };
 
 /// Helper to print values with syntax highlighting

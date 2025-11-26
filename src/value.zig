@@ -3,14 +3,17 @@ const Chunk = @import("bytecode.zig").Chunk;
 
 pub const Value = union(enum) {
     pub const Obj = union(enum) {
-        string: struct {
-            str: []u8,
-        },
-        function: struct {
+        pub const Function = struct {
             arity: usize,
             chunk: Chunk,
             name: ?*Value.Obj,
-        },
+        };
+        pub const String = struct {
+            str: []u8,
+        };
+
+        string: String,
+        function: Function,
 
         pub fn format(this: @This(), w: *std.io.Writer) !void {
             switch (this) {
@@ -23,12 +26,12 @@ pub const Value = union(enum) {
             }
         }
 
-        pub fn allocFunc(allocator: std.mem.Allocator, arity: usize, name: []const u8) !*Value.Obj {
+        pub fn allocFunc(allocator: std.mem.Allocator, arity: usize, name: ?[]const u8) !*Value.Obj {
             const func_obj = try allocator.create(Value.Obj);
             func_obj.* = .{ .function = .{
                 .arity = arity,
                 .chunk = .init(allocator),
-                .name = try Value.Obj.allocString(allocator, name),
+                .name = if (name) |val| try Value.Obj.allocString(allocator, val) else null,
             } };
 
             return func_obj;
@@ -44,13 +47,13 @@ pub const Value = union(enum) {
             switch (self.*) {
                 .string => |s| {
                     allocator.free(s.str);
-                    allocator.destroy(self);
                 },
                 .function => |f| {
                     if (f.name) |obj| obj.free(allocator);
-                    allocator.destroy(self);
                 },
             }
+
+            allocator.destroy(self);
         }
     };
 

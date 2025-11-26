@@ -1,6 +1,7 @@
 const std = @import("std");
 const bytecode = @import("bytecode.zig");
 const util = @import("util.zig");
+const Color = @import("debug.zig").Color;
 const Chunk = bytecode.Chunk;
 const Opcode = bytecode.Opcode;
 const Compiler = @import("compiler.zig").Compiler;
@@ -34,20 +35,45 @@ pub const VirtualMachine = struct {
 
         var compiler: Compiler = try .init(allocator, source);
         const func = compiler.compile() catch return InterpreterError.CompilationError;
-        try self.stack.append(allocator, .{ .obj = func });
 
+        try self.stack.append(allocator, .{ .obj = func });
+        try self.callValue(func, 0);
+
+        try self.run();
+    }
+
+    pub fn callValue(
+        self: *VirtualMachine,
+        callee: *Value.Obj,
+        arg_count: usize,
+    ) !void {
+        switch (callee.*) {
+            .function => return try self.call(callee, arg_count),
+            else => return self.runtimeError("Can only call functions and classes.", .{}),
+        }
+    }
+
+    pub fn call(self: *VirtualMachine, func: *Value.Obj, arg_count: usize) !void {
+        if (arg_count != func.function.arity) {
+            return self.runtimeError("Expected {} arguments, but got {}", .{ func.function.arity, arg_count });
+        }
+
+        if (self.call_stack.items.len > std.math.maxInt(u8) - 1) {
+            return self.runtimeError("Stack overflow.", .{});
+        }
+
+        const allocator = self.arena.allocator();
         try self.call_stack.append(allocator, .{
             .function = func,
             .ip = 0,
-            .slot_start = 0,
+            .slot_start = self.stack.items.len - arg_count - 1,
         });
-
-        try self.run();
     }
 
     pub fn run(self: *VirtualMachine) !void {
         const allocator = self.arena.allocator();
 
+        // Load the current frame
         var frame = &self.call_stack.items[self.call_stack.items.len - 1];
         var chunk = &frame.function.function.chunk;
         var ip = frame.ip;
@@ -60,7 +86,26 @@ pub const VirtualMachine = struct {
 
             switch (instr) {
                 .@"return" => {
-                    return;
+                    const result = self.stack.pop();
+
+                    // FIX: Capture the slot_start of the function we are LEAVING
+                    const close_up = frame.slot_start;
+
+                    _ = self.call_stack.pop();
+
+                    if (self.call_stack.items.len == 0) {
+                        _ = self.stack.pop();
+                        return;
+                    }
+
+                    // Restore previous frame
+                    frame = &self.call_stack.items[self.call_stack.items.len - 1];
+                    chunk = &frame.function.function.chunk;
+                    ip = frame.ip;
+
+                    // FIX: Truncate stack to the start of the function we just LEFT
+                    self.stack.items.len = close_up;
+                    try self.stack.append(allocator, result.?);
                 },
                 .pop => {
                     _ = self.stack.pop();
@@ -68,14 +113,14 @@ pub const VirtualMachine = struct {
                 .print => {
                     if (self.stack.pop()) |val| {
                         std.debug.print("{f}\n", .{val});
-                    } else @panic("'print' called with no values in the stack.");
+                    } else return self.runtimeError("'print' called with no values in the stack.", .{});
                 },
                 .negate => {
                     const value = self.stack.items[self.stack.items.len - 1];
 
                     switch (value) {
                         .float => |val| self.stack.items[self.stack.items.len - 1] = .{ .float = -val },
-                        else => @panic("'negate' called on an invalid operand."),
+                        else => return self.runtimeError("'negate' called on an invalid operand.", .{}),
                     }
                 },
                 .not => {
@@ -84,7 +129,7 @@ pub const VirtualMachine = struct {
                     switch (value) {
                         .boolean => |val| self.stack.items[self.stack.items.len - 1] = .{ .boolean = !val },
                         .nil => self.stack.items[self.stack.items.len - 1] = .{ .boolean = true },
-                        else => @panic("'not' called on an invalid operand."),
+                        else => return self.runtimeError("'not' called on an invalid operand.", .{}),
                     }
                 },
                 .add, .subtract, .multiply, .divide, .less, .greater => {
@@ -104,33 +149,47 @@ pub const VirtualMachine = struct {
                                 .greater => try self.stack.append(allocator, .{ .boolean = val_a > val_b }),
                                 else => unreachable,
                             },
-                            else => @panic("Binary operation called on number and non-number."),
+                            else => return self.runtimeError("Binary operation called on number and non-number.", .{}),
                         },
                         .obj => |obj_a| switch (b.?) {
                             .obj => |obj_b| switch (instr) {
                                 .add => {
-                                    const new_obj = try concatStrings(allocator, obj_a, obj_b);
-                                    try self.stack.append(allocator, .{ .obj = new_obj });
+                                    switch (obj_a.*) {
+                                        .string => |str_a| switch (obj_b.*) {
+                                            .string => |str_b| {
+                                                const new_str = try concatStrings(allocator, str_a, str_b);
+                                                try self.stack.append(allocator, .{ .obj = new_str });
+                                            },
+                                            else => return self.runtimeError("Tried to add string and {s}", .{@tagName(obj_b.*)}),
+                                        },
+                                        else => return self.runtimeError("Operands must be two numbers or two strings.", .{}),
+                                    }
                                 },
-                                else => @panic("Non-add operation called on two strings."),
+                                else => return self.runtimeError("Non-add operation called on two strings.", .{}),
                             },
                             .float => |multiplier| switch (instr) {
                                 .multiply => {
-                                    if (multiplier == 0) @panic("Can't multiply strings by zero!");
-                                    const buf_len = obj_a.string.str.len * @as(usize, @intFromFloat(@round(multiplier)));
-                                    const buffer = try allocator.alloc(u8, buf_len);
-                                    for (0..buffer.len) |i| {
-                                        buffer[i] = obj_a.string.str[i % obj_a.string.str.len];
+                                    switch (obj_a.*) {
+                                        .string => |str_a| {
+                                            if (multiplier == 0) @panic("Can't multiply strings by zero!");
+                                            const buf_len = str_a.str.len * @as(usize, @intFromFloat(@round(multiplier)));
+                                            const buffer = try allocator.alloc(u8, buf_len);
+                                            for (0..buffer.len) |i| {
+                                                buffer[i] = str_a.str[i % str_a.str.len];
+                                            }
+
+                                            try self.stack.append(allocator, .{
+                                                .obj = try Value.Obj.allocString(allocator, buffer),
+                                            });
+                                        },
+                                        else => return self.runtimeError("Can't multiply non-string object.", .{}),
                                     }
-                                    try self.stack.append(allocator, .{
-                                        .obj = try Value.Obj.allocString(allocator, buffer),
-                                    });
                                 },
-                                else => @panic("Can't multiply string with anything other than a number."),
+                                else => return self.runtimeError("Can't multiply {s} with {s}.", .{ @tagName(obj_a.*), @tagName(b.?) }),
                             },
-                            else => @panic("Binary operation called on string and non-string"),
+                            else => return self.runtimeError("Binary operation called on string and non-string", .{}),
                         },
-                        else => @panic("Binary opeartion called on non-number or non-string."),
+                        else => return self.runtimeError("Binary opeartion called on non-number or non-string.", .{}),
                     }
                 },
                 .constant => {
@@ -151,23 +210,26 @@ pub const VirtualMachine = struct {
                         else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
                     };
                     const global = chunk.constants.items[index];
-                    const name = global.obj.string.str;
+
+                    const name = switch (global.obj.*) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
 
                     switch (instr) {
                         .make_global, .make_global_long => {
                             if (self.stack.pop()) |val| {
                                 try self.globals.put(name, val);
-                            } else @panic("Called make global with no value in the stack for it.");
+                            } else return self.runtimeError("Called make global with no value in the stack for it.", .{});
                         },
                         else => {
                             if (!self.globals.contains(name)) {
-                                std.debug.print("Undefined variable \"{s}\".", .{name});
-                                return InterpreterError.RuntimeError;
+                                return self.runtimeError("Undefined variable \"{s}\".", .{name});
                             }
 
                             switch (instr) {
                                 .get_global, .get_global_long => try self.stack.append(allocator, self.globals.get(name).?),
-                                else => try self.globals.put(global.obj.string.str, self.stack.getLast()),
+                                else => try self.globals.put(name, self.stack.getLast()),
                             }
                         },
                     }
@@ -219,6 +281,18 @@ pub const VirtualMachine = struct {
                     const offset = util.readU16LE(chunk.code.items[ip .. ip + 2]);
                     ip = (ip + 2) - offset;
                 },
+                .call => {
+                    const arg_count: usize = @intCast(chunk.code.items[ip]);
+
+                    self.call_stack.items[self.call_stack.items.len - 1].ip = ip + 1;
+
+                    const callee = self.stack.items[self.stack.items.len - 1 - arg_count];
+                    try self.callValue(callee.obj, arg_count);
+
+                    frame = &self.call_stack.items[self.call_stack.items.len - 1];
+                    chunk = &frame.function.function.chunk;
+                    ip = frame.ip;
+                },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
                 },
@@ -250,31 +324,69 @@ pub const VirtualMachine = struct {
                                         const equal = std.mem.eql(u8, str_a.str, str_b.str);
                                         try self.stack.append(allocator, .{ .boolean = equal });
                                     },
-                                    else => @panic("Tried comparing string and non-string."),
+                                    else => try self.stack.append(allocator, .{ .boolean = false }),
                                 },
-                                else => @panic("Tried comparing string and non-string."),
+                                else => try self.stack.append(allocator, .{ .boolean = false }),
                             },
-                            else => @panic("Tried comparing objects, which aren't strings."),
+                            else => try self.stack.append(allocator, .{ .boolean = false }),
                         },
                     }
                 },
             }
+
+            // Sync IP back to frame
+            frame.ip = ip;
         }
     }
 
-    fn concatStrings(allocator: std.mem.Allocator, obj_a: *Value.Obj, obj_b: *Value.Obj) !*Value.Obj {
-        switch (obj_a.*) {
-            .string => |str_a| switch (obj_b.*) {
-                .string => |str_b| {
-                    const new_str = try std.mem.concat(allocator, u8, &.{ str_a.str, str_b.str });
+    fn concatStrings(allocator: std.mem.Allocator, str_a: Value.Obj.String, str_b: Value.Obj.String) !*Value.Obj {
+        const new_str = try std.mem.concat(allocator, u8, &.{ str_a.str, str_b.str });
+        defer allocator.free(new_str);
 
-                    return try Value.Obj.allocString(allocator, new_str);
-                },
-                else => unreachable,
-            },
-            else => unreachable,
+        return try Value.Obj.allocString(allocator, new_str);
+    }
+
+    pub fn runtimeError(self: *VirtualMachine, comptime format: []const u8, args: anytype) InterpreterError {
+        std.debug.print("{s}", .{Color.Red});
+        std.debug.print(format, args);
+        std.debug.print("{s}\n", .{Color.Reset});
+
+        // Print the Stack Trace
+        var i: usize = self.call_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const frame = &self.call_stack.items[i];
+            const function = frame.function;
+            const instruction = frame.ip - 1;
+
+            // We use LineRun, so we need to decode it
+            const chunk = &function.function.chunk;
+            var line: usize = 0;
+            var offset = instruction;
+
+            for (chunk.lines.items) |line_run| {
+                if (offset < line_run.count) {
+                    line = line_run.line;
+                    break;
+                }
+                offset -= line_run.count;
+            }
+
+            std.debug.print("[line {}] in ", .{line});
+
+            if (function.function.name) |name| {
+                std.debug.print("{s}()\n", .{name.string.str});
+            } else {
+                std.debug.print("script\n", .{});
+            }
         }
 
-        unreachable;
+        self.resetStack();
+        return InterpreterError.RuntimeError;
+    }
+
+    fn resetStack(self: *VirtualMachine) void {
+        self.stack.clearRetainingCapacity();
+        self.call_stack.clearRetainingCapacity();
     }
 };

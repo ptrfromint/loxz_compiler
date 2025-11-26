@@ -33,6 +33,7 @@ pub const FunctionState = struct {
     depth: usize,
     function: *Value.Obj,
     func_type: FunctionType,
+    enclosing: ?*FunctionState,
 };
 
 pub const Compiler = struct {
@@ -73,8 +74,9 @@ pub const Compiler = struct {
         func_state.* = .{
             .locals = .empty,
             .depth = 0,
-            .function = try Value.Obj.allocFunc(alloc, 0, "main"),
+            .function = try Value.Obj.allocFunc(alloc, 0, null),
             .func_type = .script,
+            .enclosing = null,
         };
 
         // Reserve the first slot for the VM
@@ -121,17 +123,30 @@ pub const Compiler = struct {
     }
 
     fn endCompiler(self: *Compiler) !*Value.Obj {
-        try self.emitBytes(&.{@intFromEnum(Opcode.@"return")});
+        try self.emitReturn();
 
         return self.current_function.function;
     }
 
+    fn emitReturn(self: *Compiler) !void {
+        try self.emitBytes(&.{ @intFromEnum(Opcode.nil), @intFromEnum(Opcode.@"return") });
+    }
+
     fn declaration(self: *Compiler) CompilerErrorSet!void {
-        if (try self.match(.@"var")) {
+        if (try self.match(.fun)) {
+            try self.funDeclaration();
+        } else if (try self.match(.@"var")) {
             try self.varDeclaration();
         } else {
             try self.statement();
         }
+    }
+
+    fn funDeclaration(self: *Compiler) !void {
+        const global_index = try self.parseVariable("Expected function name.");
+        try self.markInitialized();
+        try self.function(.function);
+        try self.defineVariable(global_index);
     }
 
     fn varDeclaration(self: *Compiler) !void {
@@ -154,6 +169,8 @@ pub const Compiler = struct {
             try self.forStatement();
         } else if (try self.match(.@"if")) {
             try self.ifStatement();
+        } else if (try self.match(.@"return")) {
+            try self.returnStatement();
         } else if (try self.match(.@"while")) {
             try self.whileStatement();
         } else if (try self.match(.left_brace)) {
@@ -177,6 +194,66 @@ pub const Compiler = struct {
                 _ = self.current_function.locals.pop();
                 try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
             }
+        }
+    }
+
+    fn function(self: *Compiler, func_type: FunctionType) !void {
+        const allocator = self.arena.allocator();
+
+        var func_state: FunctionState = .{
+            .func_type = func_type,
+            .enclosing = self.current_function,
+            .depth = 0,
+            .locals = .empty,
+            .function = try Value.Obj.allocFunc(allocator, 0, self.parser.previous.?.lexeme),
+        };
+        defer func_state.locals.deinit(allocator);
+
+        const prev_func = self.current_function;
+        self.current_function = &func_state;
+
+        try self.current_function.locals.append(allocator, .{
+            .name = .{ .lexeme = "", .line = 0, .type = .identifier },
+            .depth = 0,
+        });
+
+        try self.startScope();
+
+        try self.parser.consume(.left_paren, "Expected '(' after function name.");
+        if (!self.check(.right_paren)) while (true) {
+            self.current_function.function.function.arity += 1;
+
+            if (self.current_function.function.function.arity > 255) {
+                try debug.errorAt(self.parser.current.?, "Can't have more than 255 parameters");
+            }
+
+            const paramConstant = try self.parseVariable("Expected parameter name.");
+            try self.defineVariable(paramConstant);
+
+            if (!try self.match(.comma)) break;
+        };
+        try self.parser.consume(.right_paren, "Expected ')' after parameters.");
+
+        try self.parser.consume(.left_brace, "Expected '{' before function body.");
+        try self.block();
+
+        const compiled_func = try self.endCompiler();
+        self.current_function = prev_func;
+
+        try self.emitConstant(.{ .obj = compiled_func });
+    }
+
+    fn returnStatement(self: *Compiler) !void {
+        if (self.current_function.func_type == .script) {
+            try debug.errorAt(self.parser.previous.?, "Can't return from top-level code.");
+        }
+
+        if (try self.match(.semicolon)) {
+            try self.emitReturn();
+        } else {
+            try self.expression();
+            try self.parser.consume(.semicolon, "Expected ';' after return value.");
+            try self.emitBytes(&.{@intFromEnum(Opcode.@"return")});
         }
     }
 
@@ -381,7 +458,7 @@ pub const Compiler = struct {
     }
 
     fn markInitialized(self: *Compiler) !void {
-        if (self.current_function.locals.items.len < 1) return;
+        if (self.current_function.locals.items.len < 1 or self.current_function.depth == 0) return;
         const last_index = self.current_function.locals.items.len - 1;
         self.current_function.locals.items[last_index].depth = self.current_function.depth;
     }
@@ -459,6 +536,25 @@ pub const Compiler = struct {
 
         const value = try std.fmt.parseFloat(f64, self.parser.previous.?.lexeme);
         try self.emitConstant(.{ .float = value });
+    }
+
+    fn call(self: *Compiler, can_assign: bool) !void {
+        _ = can_assign;
+        const arg_count = try self.argumentList();
+        try self.emitBytes(&.{ @intFromEnum(Opcode.call), arg_count });
+    }
+
+    fn argumentList(self: *Compiler) !u8 {
+        var arg_count: u8 = 0;
+        if (!self.check(.right_paren)) while (true) {
+            try self.expression();
+            arg_count += 1;
+            if (arg_count == 255) try debug.errorAt(self.parser.previous.?, "Can't have more than 255 arguments.");
+            if (!try self.match(.comma)) break;
+        };
+
+        try self.parser.consume(.right_paren, "Expected ')' after arguments.");
+        return arg_count;
     }
 
     fn grouping(self: *Compiler, can_assign: bool) !void {
@@ -592,7 +688,7 @@ pub const Compiler = struct {
 
     fn getRule(tok_type: Token.Type) Parser.Rule {
         return switch (tok_type) {
-            .left_paren => .{ .prefix = Compiler.grouping, .infix = null, .precedence = .none },
+            .left_paren => .{ .prefix = Compiler.grouping, .infix = Compiler.call, .precedence = .call },
             .minus => .{ .prefix = Compiler.unary, .infix = Compiler.binary, .precedence = .term },
             .plus => .{ .prefix = null, .infix = Compiler.binary, .precedence = .term },
             .slash => .{ .prefix = null, .infix = Compiler.binary, .precedence = .factor },

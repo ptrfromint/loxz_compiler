@@ -33,6 +33,7 @@ pub const Opcode = enum(u8) {
     jump_if_false,
     jump,
     loop,
+    call,
 };
 
 pub const LineRun = struct {
