@@ -38,8 +38,9 @@ pub const VirtualMachine = struct {
         var compiler: Compiler = try .init(allocator, source);
         const func = compiler.compile() catch return InterpreterError.CompilationError;
 
-        try self.stack.append(allocator, .{ .obj = func });
-        try self.callValue(func, 0);
+        const main_closure = try Value.Obj.allocClosure(allocator, func);
+        try self.stack.append(allocator, .{ .obj = main_closure });
+        try self.callValue(main_closure, 0);
 
         try self.run();
     }
@@ -52,7 +53,7 @@ pub const VirtualMachine = struct {
         const allocator = self.arena.allocator();
 
         switch (callee.*) {
-            .function => return try self.call(callee, arg_count),
+            .closure => return try self.call(callee, arg_count),
             .native_function => {
                 const fun = callee.native_function.function;
                 const result = fun(arg_count, self.stack.items[self.stack.items.len - arg_count - 1 ..]);
@@ -65,13 +66,15 @@ pub const VirtualMachine = struct {
 
                 try self.stack.append(allocator, result);
             },
-            else => return self.runtimeError("Can only call functions and classes.", .{}),
+            else => return self.runtimeError("Can only call functions(closures) and classes.", .{}),
         }
     }
 
-    pub fn call(self: *VirtualMachine, func: *Value.Obj, arg_count: usize) !void {
-        if (arg_count != func.function.arity) {
-            return self.runtimeError("Expected {} arguments, but got {}", .{ func.function.arity, arg_count });
+    pub fn call(self: *VirtualMachine, closure_obj: *Value.Obj, arg_count: usize) !void {
+        const function = closure_obj.closure.function.function;
+
+        if (arg_count != function.arity) {
+            return self.runtimeError("Expected {} arguments, but got {}", .{ function.arity, arg_count });
         }
 
         if (self.call_stack.items.len > std.math.maxInt(u8) - 1) {
@@ -80,7 +83,7 @@ pub const VirtualMachine = struct {
 
         const allocator = self.arena.allocator();
         try self.call_stack.append(allocator, .{
-            .function = func,
+            .closure = closure_obj,
             .ip = 0,
             .slot_start = self.stack.items.len - arg_count - 1,
         });
@@ -91,7 +94,7 @@ pub const VirtualMachine = struct {
 
         // Load the current frame
         var frame = &self.call_stack.items[self.call_stack.items.len - 1];
-        var chunk = &frame.function.function.chunk;
+        var chunk = &frame.closure.closure.function.function.chunk;
         var ip = frame.ip;
 
         while (true) {
@@ -116,7 +119,7 @@ pub const VirtualMachine = struct {
 
                     // Restore previous frame
                     frame = &self.call_stack.items[self.call_stack.items.len - 1];
-                    chunk = &frame.function.function.chunk;
+                    chunk = &frame.closure.closure.function.function.chunk;
                     ip = frame.ip;
 
                     // FIX: Truncate stack to the start of the function we just LEFT
@@ -337,8 +340,22 @@ pub const VirtualMachine = struct {
                     try self.callValue(callee.obj, arg_count);
 
                     frame = &self.call_stack.items[self.call_stack.items.len - 1];
-                    chunk = &frame.function.function.chunk;
+                    chunk = &frame.closure.closure.function.function.chunk;
                     ip = frame.ip;
+                },
+                .closure => {
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    const func = chunk.constants.items[index];
+                    const closure = try switch (func) {
+                        .obj => |obj| switch (obj.*) {
+                            .function => |_| try Value.Obj.allocClosure(allocator, obj),
+                            else => self.runtimeError("Closure called non-function ({s})", .{@tagName(obj.*)}),
+                        },
+                        else => self.runtimeError("Closure called on non-obj ({s})", .{@tagName(func)}),
+                    };
+
+                    try self.stack.append(allocator, .{ .obj = closure });
+                    ip += 1;
                 },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
@@ -409,7 +426,7 @@ pub const VirtualMachine = struct {
         while (i > 0) {
             i -= 1;
             const frame = &self.call_stack.items[i];
-            const function = frame.function;
+            const function = frame.closure;
             const instruction = frame.ip - 1;
 
             // We use LineRun, so we need to decode it

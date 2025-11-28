@@ -16,7 +16,7 @@ const util = @import("util.zig");
 const CompilerErrorSet = error{ CompilationError, OutOfMemory, InvalidCharacter };
 
 pub const CallFrame = struct {
-    function: *Value.Obj,
+    closure: *Value.Obj,
     ip: usize,
     slot_start: usize,
 };
@@ -240,7 +240,8 @@ pub const Compiler = struct {
         const compiled_func = try self.endCompiler();
         self.current_function = prev_func;
 
-        try self.emitConstant(.{ .obj = compiled_func });
+        const index = try self.currentChunk().addConstant(.{ .obj = compiled_func });
+        try self.emitBytes(&.{ @intFromEnum(Opcode.closure), @truncate(index) });
     }
 
     fn returnStatement(self: *Compiler) !void {

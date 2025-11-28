@@ -8,18 +8,25 @@ pub const Value = union(enum) {
             chunk: Chunk,
             name: ?*Value.Obj,
         };
+
         pub const String = struct {
             str: []u8,
         };
+
         pub const NativeFunction = struct {
             pub const Ptr = *const fn (arg_count: usize, args: []Value) Value;
 
             function: NativeFunction.Ptr,
         };
 
+        pub const Closure = struct {
+            function: *Value.Obj,
+        };
+
         string: String,
         function: Function,
         native_function: NativeFunction,
+        closure: Closure,
 
         pub fn format(this: @This(), w: *std.io.Writer) !void {
             switch (this) {
@@ -29,8 +36,18 @@ pub const Value = union(enum) {
                     f.arity,
                     f.chunk.code.items.len,
                 }),
-                .native_function => |nf| try w.print("<native fn @ {*}>", .{&nf}),
+                .native_function => |*nf| try w.print("<native fn @ {*}>", .{nf}),
+                .closure => |*c| try w.print("<closure @ {*}>\n{f}", .{ c, c.function.* }),
             }
+        }
+
+        pub fn allocClosure(allocator: std.mem.Allocator, func: *Value.Obj) !*Value.Obj {
+            const closure_obj = try allocator.create(Value.Obj);
+            closure_obj.* = .{ .closure = .{
+                .function = func,
+            } };
+
+            return closure_obj;
         }
 
         pub fn allocFunc(allocator: std.mem.Allocator, arity: usize, name: ?[]const u8) !*Value.Obj {
