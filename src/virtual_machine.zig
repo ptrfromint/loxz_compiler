@@ -33,6 +33,8 @@ pub const VirtualMachine = struct {
     pub fn interpret(self: *VirtualMachine, source: []const u8) InterpreterError!void {
         const allocator = self.arena.allocator();
 
+        try self.defineNativeFunction("clock", nativeClock);
+
         var compiler: Compiler = try .init(allocator, source);
         const func = compiler.compile() catch return InterpreterError.CompilationError;
 
@@ -47,8 +49,22 @@ pub const VirtualMachine = struct {
         callee: *Value.Obj,
         arg_count: usize,
     ) !void {
+        const allocator = self.arena.allocator();
+
         switch (callee.*) {
             .function => return try self.call(callee, arg_count),
+            .native_function => {
+                const fun = callee.native_function.function;
+                const result = fun(arg_count, self.stack.items[self.stack.items.len - arg_count - 1 ..]);
+
+                // Pop the arguments off the stack
+                for (0..arg_count) |_| _ = self.stack.pop();
+
+                // FIX: Pop the native function itself off the stack as well
+                _ = self.stack.pop();
+
+                try self.stack.append(allocator, result);
+            },
             else => return self.runtimeError("Can only call functions and classes.", .{}),
         }
     }
@@ -149,6 +165,29 @@ pub const VirtualMachine = struct {
                                 .greater => try self.stack.append(allocator, .{ .boolean = val_a > val_b }),
                                 else => unreachable,
                             },
+                            .obj => |obj_a| switch (obj_a.*) {
+                                .string => |str_a| switch (instr) {
+                                    .add => {
+                                        try self.stack.append(allocator, .{
+                                            .obj = try concatStringWithNum(allocator, str_a, val_a),
+                                        });
+                                    },
+                                    .multiply => {
+                                        if (val_a == 0) @panic("Can't multiply strings by zero!");
+                                        const buf_len = str_a.str.len * @as(usize, @intFromFloat(@round(val_a)));
+                                        const buffer = try allocator.alloc(u8, buf_len);
+                                        for (0..buffer.len) |i| {
+                                            buffer[i] = str_a.str[i % str_a.str.len];
+                                        }
+
+                                        try self.stack.append(allocator, .{
+                                            .obj = try Value.Obj.allocString(allocator, buffer),
+                                        });
+                                    },
+                                    else => return self.runtimeError("Can only add/multiply string with number", .{}),
+                                },
+                                else => return self.runtimeError("Binary operation called on number and non-number/string", .{}),
+                            },
                             else => return self.runtimeError("Binary operation called on number and non-number.", .{}),
                         },
                         .obj => |obj_a| switch (b.?) {
@@ -167,12 +206,12 @@ pub const VirtualMachine = struct {
                                 },
                                 else => return self.runtimeError("Non-add operation called on two strings.", .{}),
                             },
-                            .float => |multiplier| switch (instr) {
+                            .float => |number| switch (instr) {
                                 .multiply => {
                                     switch (obj_a.*) {
                                         .string => |str_a| {
-                                            if (multiplier == 0) @panic("Can't multiply strings by zero!");
-                                            const buf_len = str_a.str.len * @as(usize, @intFromFloat(@round(multiplier)));
+                                            if (number == 0) @panic("Can't multiply strings by zero!");
+                                            const buf_len = str_a.str.len * @as(usize, @intFromFloat(@round(number)));
                                             const buffer = try allocator.alloc(u8, buf_len);
                                             for (0..buffer.len) |i| {
                                                 buffer[i] = str_a.str[i % str_a.str.len];
@@ -185,7 +224,15 @@ pub const VirtualMachine = struct {
                                         else => return self.runtimeError("Can't multiply non-string object.", .{}),
                                     }
                                 },
-                                else => return self.runtimeError("Can't multiply {s} with {s}.", .{ @tagName(obj_a.*), @tagName(b.?) }),
+                                .add => switch (obj_a.*) {
+                                    .string => |str_a| {
+                                        try self.stack.append(allocator, .{
+                                            .obj = try concatStringWithNum(allocator, str_a, number),
+                                        });
+                                    },
+                                    else => return self.runtimeError("Can't add string and {s}", .{@tagName(obj_a.*)}),
+                                },
+                                else => return self.runtimeError("Can't multiply/add {s} with {s}.", .{ @tagName(obj_a.*), @tagName(b.?) }),
                             },
                             else => return self.runtimeError("Binary operation called on string and non-string", .{}),
                         },
@@ -346,6 +393,12 @@ pub const VirtualMachine = struct {
         return try Value.Obj.allocString(allocator, new_str);
     }
 
+    fn concatStringWithNum(allocator: std.mem.Allocator, str: Value.Obj.String, num: f64) !*Value.Obj {
+        const new_str = try std.fmt.allocPrint(allocator, "{s}{}", .{ str.str, num });
+        const obj = try Value.Obj.allocString(allocator, new_str);
+        return obj;
+    }
+
     pub fn runtimeError(self: *VirtualMachine, comptime format: []const u8, args: anytype) InterpreterError {
         std.debug.print("{s}", .{Color.Red});
         std.debug.print(format, args);
@@ -389,4 +442,22 @@ pub const VirtualMachine = struct {
         self.stack.clearRetainingCapacity();
         self.call_stack.clearRetainingCapacity();
     }
+
+    fn defineNativeFunction(
+        self: *VirtualMachine,
+        name: []const u8,
+        func: Value.Obj.NativeFunction.Ptr,
+    ) !void {
+        const allocator = self.arena.allocator();
+        const native_fn = try Value.Obj.allocNativeFn(allocator, func);
+
+        try self.globals.put(name, .{ .obj = native_fn });
+    }
 };
+
+fn nativeClock(arg_count: usize, args: []Value) Value {
+    _ = arg_count;
+    _ = args;
+
+    return .{ .float = @floatFromInt(std.time.milliTimestamp()) };
+}

@@ -11,9 +11,15 @@ pub const Value = union(enum) {
         pub const String = struct {
             str: []u8,
         };
+        pub const NativeFunction = struct {
+            pub const Ptr = *const fn (arg_count: usize, args: []Value) Value;
+
+            function: NativeFunction.Ptr,
+        };
 
         string: String,
         function: Function,
+        native_function: NativeFunction,
 
         pub fn format(this: @This(), w: *std.io.Writer) !void {
             switch (this) {
@@ -23,6 +29,7 @@ pub const Value = union(enum) {
                     f.arity,
                     f.chunk.code.items.len,
                 }),
+                .native_function => |nf| try w.print("<native fn @ {*}>", .{&nf}),
             }
         }
 
@@ -34,6 +41,12 @@ pub const Value = union(enum) {
                 .name = if (name) |val| try Value.Obj.allocString(allocator, val) else null,
             } };
 
+            return func_obj;
+        }
+
+        pub fn allocNativeFn(allocator: std.mem.Allocator, func: NativeFunction.Ptr) !*Value.Obj {
+            const func_obj = try allocator.create(Value.Obj);
+            func_obj.* = .{ .native_function = .{ .function = func } };
             return func_obj;
         }
 
