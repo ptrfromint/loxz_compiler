@@ -27,13 +27,80 @@ pub const FunctionState = struct {
     pub const Local = struct {
         name: Token,
         depth: ?usize,
+        is_captured: bool = false,
+    };
+
+    pub const Upvalue = struct {
+        pub const CaptureScope = enum(u1) { outer, local = 1 };
+
+        index: usize,
+        capture_scope: Upvalue.CaptureScope,
+
+        pub fn eql(self: Upvalue, other: Upvalue) bool {
+            return self.index == other.index and self.capture_scope == other.capture_scope;
+        }
     };
 
     locals: std.ArrayList(Local),
+    upvalues: std.ArrayList(Upvalue),
     depth: usize,
     function: *Value.Obj,
     func_type: FunctionType,
     enclosing: ?*FunctionState,
+
+    pub fn resolveLocal(self: *FunctionState, name: Token) !?usize {
+        var i = self.locals.items.len;
+        while (i > 0) {
+            i -= 1;
+            const local = self.locals.items[i];
+            if (std.mem.eql(u8, local.name.lexeme, name.lexeme)) {
+                if (local.depth == null) {
+                    try debug.errorAt(local.name, "Can't read local variable in it's own initializer.");
+                }
+                return i;
+            }
+        }
+
+        return null;
+    }
+
+    pub fn resolveUpvalue(self: *FunctionState, allocator: std.mem.Allocator, name: Token) !?usize {
+        if (self.enclosing) |parent_func| {
+            if (try parent_func.resolveLocal(name)) |index| {
+                parent_func.locals.items[index].is_captured = true;
+                return try self.addUpvalue(allocator, .{ .index = index, .capture_scope = .local });
+            }
+
+            // NOTE: if we haven't found the variable in the immediate local enclosure
+            // we recurse going up the parent enclosures until we hit the base case.
+            // Once we've hit the base case, we chain upvalues going down the call stack
+            // until we return here to the original call, almost like this:
+            //           search            <-       search            <-   "we need x!"
+            // func_state1 locals [0: "x"] <- func_state2 upvalues[]  <- self upvalues[]
+            //           find local        ->      set upvalue        ->  set original upvalue
+            // func_state1 locals [0: "x"] -> func_state2 upvalues[0] -> self upvalues[0]
+            if (try parent_func.resolveUpvalue(allocator, name)) |upvalue| {
+                return try self.addUpvalue(allocator, .{ .index = upvalue, .capture_scope = .outer });
+            }
+        }
+
+        return null;
+    }
+
+    pub fn addUpvalue(
+        self: *FunctionState,
+        allocator: std.mem.Allocator,
+        upvalue: Upvalue,
+    ) !usize {
+        for (self.upvalues.items, 0..) |current, i| {
+            if (current.eql(upvalue)) {
+                return i;
+            }
+        }
+
+        try self.upvalues.append(allocator, upvalue);
+        return self.upvalues.items.len - 1;
+    }
 };
 
 pub const Compiler = struct {
@@ -73,6 +140,7 @@ pub const Compiler = struct {
         const func_state = try alloc.create(FunctionState);
         func_state.* = .{
             .locals = .empty,
+            .upvalues = .empty,
             .depth = 0,
             .function = try Value.Obj.allocFunc(alloc, 0, null),
             .func_type = .script,
@@ -189,10 +257,21 @@ pub const Compiler = struct {
     fn endScope(self: *Compiler) !void {
         self.current_function.depth -= 1;
 
-        for (self.current_function.locals.items) |local| {
-            if (local.depth.? > self.current_function.depth) {
+        var i = self.current_function.locals.items.len;
+        while (i > 0) {
+            i -= 1;
+            const local = self.current_function.locals.items[i];
+
+            if (local.depth != null and local.depth.? > self.current_function.depth) {
+                if (local.is_captured) {
+                    try self.emitBytes(&.{@intFromEnum(Opcode.close_upvalue)});
+                } else {
+                    try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+                }
+
                 _ = self.current_function.locals.pop();
-                try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+            } else {
+                break;
             }
         }
     }
@@ -205,9 +284,13 @@ pub const Compiler = struct {
             .enclosing = self.current_function,
             .depth = 0,
             .locals = .empty,
+            .upvalues = .empty,
             .function = try Value.Obj.allocFunc(allocator, 0, self.parser.previous.?.lexeme),
         };
-        defer func_state.locals.deinit(allocator);
+        defer {
+            func_state.locals.deinit(allocator);
+            func_state.upvalues.deinit(allocator);
+        }
 
         const prev_func = self.current_function;
         self.current_function = &func_state;
@@ -238,10 +321,15 @@ pub const Compiler = struct {
         try self.block();
 
         const compiled_func = try self.endCompiler();
+        compiled_func.function.upvalue_count = func_state.upvalues.items.len;
         self.current_function = prev_func;
 
         const index = try self.currentChunk().addConstant(.{ .obj = compiled_func });
         try self.emitBytes(&.{ @intFromEnum(Opcode.closure), @truncate(index) });
+
+        for (func_state.upvalues.items) |upvalue| {
+            try self.emitBytes(&.{ @intFromEnum(upvalue.capture_scope), @truncate(upvalue.index) });
+        }
     }
 
     fn returnStatement(self: *Compiler) !void {
@@ -468,26 +556,30 @@ pub const Compiler = struct {
         self: *Compiler,
         index: usize,
         comptime op: enum { set, get },
-        comptime scope: enum { global, local },
+        comptime scope: enum { global, local, upvalue },
     ) !void {
         const short_op = switch (op) {
             .get => switch (scope) {
                 .global => Opcode.get_global,
                 .local => Opcode.get_local,
+                .upvalue => Opcode.get_upvalue,
             },
             .set => switch (scope) {
                 .global => Opcode.set_global,
                 .local => Opcode.set_local,
+                .upvalue => Opcode.set_upvalue,
             },
         };
         const long_op = switch (op) {
             .get => switch (scope) {
                 .global => Opcode.get_global_long,
                 .local => Opcode.get_local_long,
+                .upvalue => Opcode.get_upvalue_long,
             },
             .set => switch (scope) {
                 .global => Opcode.set_global_long,
                 .local => Opcode.set_local_long,
+                .upvalue => Opcode.set_upvalue_long,
             },
         };
 
@@ -648,12 +740,21 @@ pub const Compiler = struct {
     }
 
     fn namedVariable(self: *Compiler, name: Token, can_assign: bool) !void {
-        if (try self.resolveLocal(name)) |local| {
+        const allocator = self.arena.allocator();
+
+        if (try self.current_function.resolveLocal(name)) |local| {
             if (try self.match(.equal) and can_assign) {
                 try self.expression();
                 try self.emitVariableOp(local, .set, .local);
             } else {
                 try self.emitVariableOp(local, .get, .local);
+            }
+        } else if (try self.current_function.resolveUpvalue(allocator, name)) |upvalue| {
+            if (try self.match(.equal) and can_assign) {
+                try self.expression();
+                try self.emitVariableOp(upvalue, .set, .upvalue);
+            } else {
+                try self.emitVariableOp(upvalue, .get, .upvalue);
             }
         } else {
             const global = try self.identifierConstant(name);
@@ -665,26 +766,6 @@ pub const Compiler = struct {
                 try self.emitVariableOp(global, .get, .global);
             }
         }
-    }
-
-    fn resolveLocal(self: *Compiler, name: Token) !?usize {
-        if (self.current_function.locals.items.len < 1) return null;
-
-        var i = self.current_function.locals.items.len - 1;
-
-        while (i >= 0) : (i -= 1) {
-            const local = self.current_function.locals.items[i];
-            if (std.mem.eql(u8, local.name.lexeme, name.lexeme)) {
-                if (local.depth == null) {
-                    try debug.errorAt(local.name, "Can't read local variable in it's own initializer.");
-                }
-                return i;
-            }
-
-            if (i == 0) return null;
-        }
-
-        return null;
     }
 
     fn getRule(tok_type: Token.Type) Parser.Rule {

@@ -14,6 +14,7 @@ pub const VirtualMachine = struct {
     call_stack: std.ArrayList(CallFrame),
     stack: std.ArrayList(Value),
     globals: std.StringHashMap(Value),
+    open_upvalues: ?*Value.Obj = null,
     arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) VirtualMachine {
@@ -89,6 +90,22 @@ pub const VirtualMachine = struct {
         });
     }
 
+    fn getUpvalue(self: *VirtualMachine, upvalue: *Value.Obj) Value {
+        if (upvalue.upvalue.location) |stack_index| {
+            return self.stack.items[stack_index];
+        } else {
+            return upvalue.upvalue.closed;
+        }
+    }
+
+    fn setUpvalue(self: *VirtualMachine, upvalue: *Value.Obj, new_val: Value) void {
+        if (upvalue.upvalue.location) |stack_index| {
+            self.stack.items[stack_index] = new_val;
+        } else {
+            upvalue.upvalue.closed = new_val;
+        }
+    }
+
     pub fn run(self: *VirtualMachine) !void {
         const allocator = self.arena.allocator();
 
@@ -109,6 +126,8 @@ pub const VirtualMachine = struct {
 
                     // FIX: Capture the slot_start of the function we are LEAVING
                     const close_up = frame.slot_start;
+
+                    self.closeUpvalues(close_up);
 
                     _ = self.call_stack.pop();
 
@@ -224,7 +243,7 @@ pub const VirtualMachine = struct {
                                                 .obj = try Value.Obj.allocString(allocator, buffer),
                                             });
                                         },
-                                        else => return self.runtimeError("Can't multiply non-string object.", .{}),
+                                        else => return self.runtimeError("Can't multiply number with {s}.", .{@tagName(obj_a.*)}),
                                     }
                                 },
                                 .add => switch (obj_a.*) {
@@ -308,6 +327,27 @@ pub const VirtualMachine = struct {
                         else => ip += 3,
                     }
                 },
+                .get_upvalue, .set_upvalue, .get_upvalue_long, .set_upvalue_long => {
+                    const index: usize = switch (instr) {
+                        .get_upvalue, .set_upvalue => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+
+                    const upvalue = frame.closure.closure.upvalues.items[index];
+
+                    if (instr == .get_upvalue or instr == .get_upvalue_long) {
+                        const val = self.getUpvalue(upvalue);
+                        try self.stack.append(allocator, val);
+                    } else {
+                        const val = self.stack.getLast();
+                        self.setUpvalue(upvalue, val);
+                    }
+
+                    switch (instr) {
+                        .get_upvalue, .set_upvalue => ip += 1,
+                        else => ip += 3,
+                    }
+                },
                 .jump_if_false => {
                     const offset = util.readU16LE(chunk.code.items[ip .. ip + 2]);
                     const value = self.stack.getLast();
@@ -337,7 +377,10 @@ pub const VirtualMachine = struct {
                     self.call_stack.items[self.call_stack.items.len - 1].ip = ip + 1;
 
                     const callee = self.stack.items[self.stack.items.len - 1 - arg_count];
-                    try self.callValue(callee.obj, arg_count);
+                    switch (callee) {
+                        .obj => |obj| try self.callValue(obj, arg_count),
+                        else => return self.runtimeError("Can only call functions! Can't call a {s}", .{@tagName(callee)}),
+                    }
 
                     frame = &self.call_stack.items[self.call_stack.items.len - 1];
                     chunk = &frame.closure.closure.function.function.chunk;
@@ -345,17 +388,42 @@ pub const VirtualMachine = struct {
                 },
                 .closure => {
                     const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
                     const func = chunk.constants.items[index];
-                    const closure = try switch (func) {
+
+                    const closure = switch (func) {
                         .obj => |obj| switch (obj.*) {
                             .function => |_| try Value.Obj.allocClosure(allocator, obj),
-                            else => self.runtimeError("Closure called non-function ({s})", .{@tagName(obj.*)}),
+                            else => return self.runtimeError("Closure operand must be a function.", .{}),
                         },
-                        else => self.runtimeError("Closure called on non-obj ({s})", .{@tagName(func)}),
+                        else => return self.runtimeError("Closure operand must be an object.", .{}),
                     };
 
                     try self.stack.append(allocator, .{ .obj = closure });
-                    ip += 1;
+
+                    const upvalue_count = closure.closure.function.function.upvalue_count;
+
+                    for (0..upvalue_count) |_| {
+                        const is_local_byte = chunk.code.items[ip];
+                        const is_local = is_local_byte == 1;
+                        ip += 1;
+
+                        const index_byte: usize = @intCast(chunk.code.items[ip]);
+                        ip += 1;
+
+                        if (is_local) {
+                            const slot_index = frame.slot_start + index_byte;
+                            const upvalue = try self.captureUpvalue(allocator, slot_index);
+                            try closure.closure.upvalues.append(allocator, upvalue);
+                        } else {
+                            const upvalue = frame.closure.closure.upvalues.items[index_byte];
+                            try closure.closure.upvalues.append(allocator, upvalue);
+                        }
+                    }
+                },
+                .close_upvalue => {
+                    self.closeUpvalues(self.stack.items.len - 1);
+                    _ = self.stack.pop();
                 },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
@@ -426,11 +494,11 @@ pub const VirtualMachine = struct {
         while (i > 0) {
             i -= 1;
             const frame = &self.call_stack.items[i];
-            const function = frame.closure;
+            const closure = frame.closure;
             const instruction = frame.ip - 1;
 
             // We use LineRun, so we need to decode it
-            const chunk = &function.function.chunk;
+            const chunk = closure.closure.function.function.chunk;
             var line: usize = 0;
             var offset = instruction;
 
@@ -444,7 +512,7 @@ pub const VirtualMachine = struct {
 
             std.debug.print("[line {}] in ", .{line});
 
-            if (function.function.name) |name| {
+            if (closure.closure.function.function.name) |name| {
                 std.debug.print("{s}()\n", .{name.string.str});
             } else {
                 std.debug.print("script\n", .{});
@@ -469,6 +537,51 @@ pub const VirtualMachine = struct {
         const native_fn = try Value.Obj.allocNativeFn(allocator, func);
 
         try self.globals.put(name, .{ .obj = native_fn });
+    }
+
+    fn captureUpvalue(self: *VirtualMachine, allocator: std.mem.Allocator, slot_index: usize) !*Value.Obj {
+        var prev_upvalue: ?*Value.Obj = null;
+        var upvalue = self.open_upvalues;
+
+        while (upvalue != null and upvalue.?.upvalue.location.? > slot_index) {
+            prev_upvalue = upvalue;
+            upvalue = upvalue.?.upvalue.next;
+        }
+
+        if (upvalue != null and upvalue.?.upvalue.location.? == slot_index) {
+            return upvalue.?;
+        }
+
+        const created_upvalue_ptr = try allocator.create(Value.Obj);
+        created_upvalue_ptr.* = .{
+            .upvalue = .{
+                .location = slot_index, // Point to the index
+                .closed = .nil,
+                .next = upvalue, // Insert into list
+            },
+        };
+
+        // 3. Insert into the linked list
+        if (prev_upvalue == null) {
+            self.open_upvalues = created_upvalue_ptr;
+        } else {
+            prev_upvalue.?.upvalue.next = created_upvalue_ptr;
+        }
+
+        return created_upvalue_ptr;
+    }
+
+    fn closeUpvalues(self: *VirtualMachine, last_index: usize) void {
+        while (self.open_upvalues != null and self.open_upvalues.?.upvalue.location.? >= last_index) {
+            var upvalue = self.open_upvalues.?;
+
+            const value_on_stack = self.stack.items[upvalue.upvalue.location.?];
+            upvalue.upvalue.closed = value_on_stack;
+
+            upvalue.upvalue.location = null;
+
+            self.open_upvalues = upvalue.upvalue.next;
+        }
     }
 };
 

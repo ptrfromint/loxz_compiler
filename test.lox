@@ -1,9 +1,13 @@
-var start = clock();
+fun doubler(num) {
+  fun double() {
+      return num * 2;
+  }
 
-for (var i = 1; i <= 10; i = i + 1) {
-	print "*" * i;
-}
+  return double;
+} 
 
-var time_taken = clock() - start;
-print "This took " + time_taken + " ms";
+var forty = doubler(20);
+var sixty = doubler(30);
 
+print forty();
+print sixty();
