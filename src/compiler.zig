@@ -281,7 +281,6 @@ pub const Compiler = struct {
     }
 
     fn function(self: *Compiler, func_type: FunctionType) !void {
-        // We use the same allocator (GC)
         const allocator = self.allocator;
 
         var func_state: FunctionState = .{

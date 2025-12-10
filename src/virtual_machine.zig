@@ -22,12 +22,12 @@ pub const VirtualMachine = struct {
     globals: std.StringHashMap(Value),
     open_upvalues: ?*Value.Obj = null,
 
-    // The head of the linked list of all allocated objects.
-    // The VM owns this list and is responsible for freeing it on deinit.
+    /// The head of the linked list of all allocated objects.
+    /// The VM owns this list and is responsible for freeing it on deinit.
     objects: ?*Value.Obj = null,
 
-    // We store the allocator here to use for stack/call_stack growth.
-    // This is typically the GarbageCollector's allocator.
+    /// We store the allocator here to use for stack/call_stack growth.
+    /// This is typically the GarbageCollector's allocator.
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) VirtualMachine {
@@ -56,23 +56,23 @@ pub const VirtualMachine = struct {
 
     /// Called by the GarbageCollector to mark all roots reachable from the VM.
     pub fn markRoots(self: *VirtualMachine, gc: *GarbageCollector) !void {
-        // 1. Mark values on the Stack
+        // Mark values on the Stack
         for (self.stack.items) |val| {
             try gc.markValue(val);
         }
 
-        // 2. Mark Global variables
+        // Mark Global variables
         var it = self.globals.iterator();
         while (it.next()) |entry| {
             try gc.markValue(entry.value_ptr.*);
         }
 
-        // 3. Mark Call Frames (specifically the closures they are executing)
+        // Mark Call Frames (specifically the closures they are executing)
         for (self.call_stack.items) |frame| {
             try gc.markObject(frame.closure);
         }
 
-        // 4. Mark Open Upvalues (upvalues pointing to stack slots that haven't been closed yet)
+        // Mark Open Upvalues (upvalues pointing to stack slots that haven't been closed yet)
         var upvalue = self.open_upvalues;
         while (upvalue) |u| {
             try gc.markObject(u);
@@ -91,13 +91,11 @@ pub const VirtualMachine = struct {
         const gc: *GarbageCollector = @ptrCast(@alignCast(allocator.ptr));
 
         var compiler: Compiler = try .init(allocator, &self.objects, source);
+        defer compiler.deinit();
 
         // Register compiler as a source of roots for the GC
         gc.compiler = &compiler;
-        defer {
-            gc.compiler = null;
-            compiler.deinit();
-        }
+        defer gc.compiler = null;
 
         const func = compiler.compile() catch return InterpreterError.CompilationError;
 
@@ -616,7 +614,6 @@ pub const VirtualMachine = struct {
         const created_upvalue_ptr = try Value.Obj.allocUpvalue(allocator, &self.objects, slot_index);
         created_upvalue_ptr.kind.upvalue.next = upvalue;
 
-        // 3. Insert into the linked list
         if (prev_upvalue == null) {
             self.open_upvalues = created_upvalue_ptr;
         } else {
