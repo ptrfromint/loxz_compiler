@@ -62,7 +62,7 @@ pub const Value = union(enum) {
             try w.print("{f}", .{this.kind});
         }
 
-        pub fn allocClosure(allocator: std.mem.Allocator, func: *Value.Obj) !*Value.Obj {
+        pub fn allocClosure(allocator: std.mem.Allocator, objects: *?*Value.Obj, func: *Value.Obj) !*Value.Obj {
             const closure_obj = try allocator.create(Value.Obj);
             closure_obj.* = .{
                 .kind = .{
@@ -71,54 +71,64 @@ pub const Value = union(enum) {
                         .upvalues = try .initCapacity(allocator, func.kind.function.upvalue_count),
                     },
                 },
+                .next = objects.*,
             };
+            objects.* = closure_obj;
 
             return closure_obj;
         }
 
-        pub fn allocFunc(allocator: std.mem.Allocator, arity: usize, name: ?[]const u8) !*Value.Obj {
+        pub fn allocFunc(allocator: std.mem.Allocator, objects: *?*Value.Obj, arity: usize, name: ?[]const u8) !*Value.Obj {
             const func_obj = try allocator.create(Value.Obj);
             func_obj.* = .{
                 .kind = .{
                     .function = .{
                         .arity = arity,
                         .chunk = .init(allocator),
-                        .name = if (name) |val| try Value.Obj.allocString(allocator, val) else null,
+                        .name = if (name) |val| try Value.Obj.allocString(allocator, objects, val) else null,
                         .upvalue_count = 0,
                     },
                 },
+                .next = objects.*,
             };
+            objects.* = func_obj;
 
             return func_obj;
         }
 
-        pub fn allocNativeFn(allocator: std.mem.Allocator, func: NativeFunction.Ptr) !*Value.Obj {
+        pub fn allocNativeFn(allocator: std.mem.Allocator, objects: *?*Value.Obj, func: NativeFunction.Ptr) !*Value.Obj {
             const func_obj = try allocator.create(Value.Obj);
             func_obj.* = .{
                 .kind = .{
                     .native_function = .{ .function = func },
                 },
+                .next = objects.*,
             };
+            objects.* = func_obj;
             return func_obj;
         }
 
-        pub fn allocString(allocator: std.mem.Allocator, str: []const u8) !*Value.Obj {
+        pub fn allocString(allocator: std.mem.Allocator, objects: *?*Value.Obj, str: []const u8) !*Value.Obj {
             const str_obj = try allocator.create(Value.Obj);
             str_obj.* = .{
                 .kind = .{
                     .string = .{ .str = try allocator.dupe(u8, str) },
                 },
+                .next = objects.*,
             };
+            objects.* = str_obj;
             return str_obj;
         }
 
-        pub fn allocUpvalue(allocator: std.mem.Allocator, slot_index: usize) !*Value.Obj {
+        pub fn allocUpvalue(allocator: std.mem.Allocator, objects: *?*Value.Obj, slot_index: usize) !*Value.Obj {
             const upvalue_obj = try allocator.create(Value.Obj);
             upvalue_obj.* = .{
                 .kind = .{
                     .upvalue = .{ .location = slot_index },
                 },
+                .next = objects.*,
             };
+            objects.* = upvalue_obj;
             return upvalue_obj;
         }
 

@@ -16,6 +16,7 @@ pub const VirtualMachine = struct {
     stack: std.ArrayList(Value),
     globals: std.StringHashMap(Value),
     open_upvalues: ?*Value.Obj = null,
+    objects: ?*Value.Obj = null,
     arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) VirtualMachine {
@@ -37,10 +38,10 @@ pub const VirtualMachine = struct {
 
         try self.defineNativeFunction("clock", nativeClock);
 
-        var compiler: Compiler = try .init(allocator, source);
+        var compiler: Compiler = try .init(allocator, &self.objects, source);
         const func = compiler.compile() catch return InterpreterError.CompilationError;
 
-        const main_closure = try Value.Obj.allocClosure(allocator, func);
+        const main_closure = try Value.Obj.allocClosure(allocator, &self.objects, func);
         try self.stack.append(allocator, .{ .obj = main_closure });
         try self.callValue(main_closure, 0);
 
@@ -192,7 +193,7 @@ pub const VirtualMachine = struct {
                                 .string => |str_a| switch (instr) {
                                     .add => {
                                         try self.stack.append(allocator, .{
-                                            .obj = try concatStringWithNum(allocator, str_a, val_a),
+                                            .obj = try concatStringWithNum(allocator, &self.objects, str_a, val_a),
                                         });
                                     },
                                     .multiply => {
@@ -204,7 +205,7 @@ pub const VirtualMachine = struct {
                                         }
 
                                         try self.stack.append(allocator, .{
-                                            .obj = try Value.Obj.allocString(allocator, buffer),
+                                            .obj = try Value.Obj.allocString(allocator, &self.objects, buffer),
                                         });
                                     },
                                     else => return self.runtimeError("Can only add/multiply string with number", .{}),
@@ -219,7 +220,7 @@ pub const VirtualMachine = struct {
                                     switch (obj_a.kind) {
                                         .string => |str_a| switch (obj_b.kind) {
                                             .string => |str_b| {
-                                                const new_str = try concatStrings(allocator, str_a, str_b);
+                                                const new_str = try concatStrings(allocator, &self.objects, str_a, str_b);
                                                 try self.stack.append(allocator, .{ .obj = new_str });
                                             },
                                             else => return self.runtimeError("Tried to add string and {s}", .{@tagName(obj_b.kind)}),
@@ -241,7 +242,7 @@ pub const VirtualMachine = struct {
                                             }
 
                                             try self.stack.append(allocator, .{
-                                                .obj = try Value.Obj.allocString(allocator, buffer),
+                                                .obj = try Value.Obj.allocString(allocator, &self.objects, buffer),
                                             });
                                         },
                                         else => return self.runtimeError("Can't multiply number with {s}.", .{@tagName(obj_a.kind)}),
@@ -250,7 +251,7 @@ pub const VirtualMachine = struct {
                                 .add => switch (obj_a.kind) {
                                     .string => |str_a| {
                                         try self.stack.append(allocator, .{
-                                            .obj = try concatStringWithNum(allocator, str_a, number),
+                                            .obj = try concatStringWithNum(allocator, &self.objects, str_a, number),
                                         });
                                     },
                                     else => return self.runtimeError("Can't add string and {s}", .{@tagName(obj_a.kind)}),
@@ -394,7 +395,7 @@ pub const VirtualMachine = struct {
 
                     const closure = switch (func) {
                         .obj => |obj| switch (obj.kind) {
-                            .function => |_| try Value.Obj.allocClosure(allocator, obj),
+                            .function => |_| try Value.Obj.allocClosure(allocator, &self.objects, obj),
                             else => return self.runtimeError("Closure operand must be a function.", .{}),
                         },
                         else => return self.runtimeError("Closure operand must be an object.", .{}),
@@ -472,16 +473,16 @@ pub const VirtualMachine = struct {
         }
     }
 
-    fn concatStrings(allocator: std.mem.Allocator, str_a: Value.Obj.String, str_b: Value.Obj.String) !*Value.Obj {
+    fn concatStrings(allocator: std.mem.Allocator, objects: *?*Value.Obj, str_a: Value.Obj.String, str_b: Value.Obj.String) !*Value.Obj {
         const new_str = try std.mem.concat(allocator, u8, &.{ str_a.str, str_b.str });
         defer allocator.free(new_str);
 
-        return try Value.Obj.allocString(allocator, new_str);
+        return try Value.Obj.allocString(allocator, objects, new_str);
     }
 
-    fn concatStringWithNum(allocator: std.mem.Allocator, str: Value.Obj.String, num: f64) !*Value.Obj {
+    fn concatStringWithNum(allocator: std.mem.Allocator, objects: *?*Value.Obj, str: Value.Obj.String, num: f64) !*Value.Obj {
         const new_str = try std.fmt.allocPrint(allocator, "{s}{}", .{ str.str, num });
-        const obj = try Value.Obj.allocString(allocator, new_str);
+        const obj = try Value.Obj.allocString(allocator, objects, new_str);
         return obj;
     }
 
@@ -535,7 +536,7 @@ pub const VirtualMachine = struct {
         func: Value.Obj.NativeFunction.Ptr,
     ) !void {
         const allocator = self.arena.allocator();
-        const native_fn = try Value.Obj.allocNativeFn(allocator, func);
+        const native_fn = try Value.Obj.allocNativeFn(allocator, &self.objects, func);
 
         try self.globals.put(name, .{ .obj = native_fn });
     }
@@ -553,16 +554,8 @@ pub const VirtualMachine = struct {
             return upvalue.?;
         }
 
-        const created_upvalue_ptr = try allocator.create(Value.Obj);
-        created_upvalue_ptr.* = .{
-            .kind = .{
-                .upvalue = .{
-                    .location = slot_index, // Point to the index
-                    .closed = .nil,
-                    .next = upvalue, // Insert into list
-                },
-            },
-        };
+        const created_upvalue_ptr = try Value.Obj.allocUpvalue(allocator, &self.objects, slot_index);
+        created_upvalue_ptr.kind.upvalue.next = upvalue;
 
         // 3. Insert into the linked list
         if (prev_upvalue == null) {

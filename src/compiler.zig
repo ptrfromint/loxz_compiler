@@ -105,6 +105,7 @@ pub const Compiler = struct {
     scanner: *Scanner,
     parser: *Parser,
     current_function: *FunctionState,
+    objects: *?*Value.Obj,
 
     pub const Error = error{CompilationError};
 
@@ -122,7 +123,7 @@ pub const Compiler = struct {
         primary,
     };
 
-    pub fn init(allocator: std.mem.Allocator, source: []const u8) !Compiler {
+    pub fn init(allocator: std.mem.Allocator, objects: *?*Value.Obj, source: []const u8) !Compiler {
         const arena_ptr = try allocator.create(std.heap.ArenaAllocator);
         arena_ptr.* = std.heap.ArenaAllocator.init(allocator);
 
@@ -139,7 +140,7 @@ pub const Compiler = struct {
             .locals = .empty,
             .upvalues = .empty,
             .depth = 0,
-            .function = try Value.Obj.allocFunc(alloc, 0, null),
+            .function = try Value.Obj.allocFunc(alloc, objects, 0, null),
             .func_type = .script,
             .enclosing = null,
         };
@@ -155,6 +156,7 @@ pub const Compiler = struct {
             .scanner = scanner,
             .parser = parser,
             .current_function = func_state,
+            .objects = objects,
         };
     }
 
@@ -282,7 +284,7 @@ pub const Compiler = struct {
             .depth = 0,
             .locals = .empty,
             .upvalues = .empty,
-            .function = try Value.Obj.allocFunc(allocator, 0, self.parser.previous.?.lexeme),
+            .function = try Value.Obj.allocFunc(allocator, self.objects, 0, self.parser.previous.?.lexeme),
         };
         defer {
             func_state.locals.deinit(allocator);
@@ -484,7 +486,7 @@ pub const Compiler = struct {
     fn identifierConstant(self: *Compiler, name: Token) !usize {
         const allocator = self.arena.allocator();
         return try self.currentChunk().addConstant(.{
-            .obj = try Value.Obj.allocString(allocator, name.lexeme),
+            .obj = try Value.Obj.allocString(allocator, self.objects, name.lexeme),
         });
     }
 
@@ -706,7 +708,7 @@ pub const Compiler = struct {
         _ = can_assign;
         const allocator = self.arena.allocator();
         try self.emitConstant(.{
-            .obj = try Value.Obj.allocString(allocator, self.parser.previous.?.lexeme),
+            .obj = try Value.Obj.allocString(allocator, self.objects, self.parser.previous.?.lexeme),
         });
     }
 
