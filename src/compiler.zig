@@ -1,17 +1,14 @@
 const std = @import("std");
 
-const Parser = @import("parser.zig").Parser;
-const Value = @import("value.zig").Value;
-
-const Scanner = @import("scanner.zig").Scanner;
-const Token = @import("scanner.zig").Token;
-
 const bytecode = @import("bytecode.zig");
 const Chunk = bytecode.Chunk;
 const Opcode = bytecode.Opcode;
-
 const debug = @import("debug.zig");
+const Parser = @import("parser.zig").Parser;
+const Scanner = @import("scanner.zig").Scanner;
+const Token = @import("scanner.zig").Token;
 const util = @import("util.zig");
+const Value = @import("value.zig").Value;
 
 const CompilerErrorSet = error{ CompilationError, OutOfMemory, InvalidCharacter };
 
@@ -187,7 +184,7 @@ pub const Compiler = struct {
     }
 
     fn currentChunk(self: *Compiler) *Chunk {
-        return &self.current_function.function.function.chunk;
+        return &self.current_function.function.kind.function.chunk;
     }
 
     fn endCompiler(self: *Compiler) !*Value.Obj {
@@ -304,9 +301,9 @@ pub const Compiler = struct {
 
         try self.parser.consume(.left_paren, "Expected '(' after function name.");
         if (!self.check(.right_paren)) while (true) {
-            self.current_function.function.function.arity += 1;
+            self.current_function.function.kind.function.arity += 1;
 
-            if (self.current_function.function.function.arity > 255) {
+            if (self.current_function.function.kind.function.arity > 255) {
                 try debug.errorAt(self.parser.current.?, "Can't have more than 255 parameters");
             }
 
@@ -321,7 +318,7 @@ pub const Compiler = struct {
         try self.block();
 
         const compiled_func = try self.endCompiler();
-        compiled_func.function.upvalue_count = func_state.upvalues.items.len;
+        compiled_func.kind.function.upvalue_count = func_state.upvalues.items.len;
         self.current_function = prev_func;
 
         const index = try self.currentChunk().addConstant(.{ .obj = compiled_func });

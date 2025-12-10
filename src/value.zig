@@ -1,8 +1,35 @@
 const std = @import("std");
+
 const Chunk = @import("bytecode.zig").Chunk;
 
 pub const Value = union(enum) {
-    pub const Obj = union(enum) {
+    pub const Obj = struct {
+        kind: Kind,
+        is_marked: bool = false,
+        next: ?*Obj = null,
+
+        pub const Kind = union(enum) {
+            function: Function,
+            string: String,
+            native_function: NativeFunction,
+            closure: Closure,
+            upvalue: Upvalue,
+
+            pub fn format(this: *const Kind, w: *std.io.Writer) !void {
+                switch (this.*) {
+                    .string => |val| try w.print("{s}", .{val.str}),
+                    .function => |f| try w.print("<fn {s} ({})> [code len {}]", .{
+                        if (f.name) |obj| obj.kind.string.str else "<script>",
+                        f.arity,
+                        f.chunk.code.items.len,
+                    }),
+                    .native_function => |*nf| try w.print("<native fn @ {*}>", .{nf}),
+                    .closure => |*c| try w.print("<closure @ {*}>\n{f}", .{ c, c.function.kind }),
+                    .upvalue => |_| try w.print("<upvalue>", .{}),
+                }
+            }
+        };
+
         pub const Function = struct {
             arity: usize,
             upvalue_count: usize,
@@ -31,80 +58,85 @@ pub const Value = union(enum) {
             next: ?*Value.Obj = null,
         };
 
-        string: String,
-        function: Function,
-        native_function: NativeFunction,
-        closure: Closure,
-        upvalue: Upvalue,
-
-        pub fn format(this: @This(), w: *std.io.Writer) !void {
-            switch (this) {
-                .string => |val| try w.print("{s}", .{val.str}),
-                .function => |f| try w.print("<fn {s} ({})> [code len {}]", .{
-                    if (f.name) |obj| obj.string.str else "<script>",
-                    f.arity,
-                    f.chunk.code.items.len,
-                }),
-                .native_function => |*nf| try w.print("<native fn @ {*}>", .{nf}),
-                .closure => |*c| try w.print("<closure @ {*}>\n{f}", .{ c, c.function.* }),
-                .upvalue => |_| try w.print("<upvalue>", .{}),
-            }
+        pub fn format(this: *const Obj, w: *std.io.Writer) !void {
+            try w.print("{f}", .{this.kind});
         }
 
         pub fn allocClosure(allocator: std.mem.Allocator, func: *Value.Obj) !*Value.Obj {
             const closure_obj = try allocator.create(Value.Obj);
-            closure_obj.* = .{ .closure = .{
-                .function = func,
-                .upvalues = try .initCapacity(allocator, func.function.upvalue_count),
-            } };
+            closure_obj.* = .{
+                .kind = .{
+                    .closure = .{
+                        .function = func,
+                        .upvalues = try .initCapacity(allocator, func.kind.function.upvalue_count),
+                    },
+                },
+            };
 
             return closure_obj;
         }
 
         pub fn allocFunc(allocator: std.mem.Allocator, arity: usize, name: ?[]const u8) !*Value.Obj {
             const func_obj = try allocator.create(Value.Obj);
-            func_obj.* = .{ .function = .{
-                .arity = arity,
-                .chunk = .init(allocator),
-                .name = if (name) |val| try Value.Obj.allocString(allocator, val) else null,
-                .upvalue_count = 0,
-            } };
+            func_obj.* = .{
+                .kind = .{
+                    .function = .{
+                        .arity = arity,
+                        .chunk = .init(allocator),
+                        .name = if (name) |val| try Value.Obj.allocString(allocator, val) else null,
+                        .upvalue_count = 0,
+                    },
+                },
+            };
 
             return func_obj;
         }
 
         pub fn allocNativeFn(allocator: std.mem.Allocator, func: NativeFunction.Ptr) !*Value.Obj {
             const func_obj = try allocator.create(Value.Obj);
-            func_obj.* = .{ .native_function = .{ .function = func } };
+            func_obj.* = .{
+                .kind = .{
+                    .native_function = .{ .function = func },
+                },
+            };
             return func_obj;
         }
 
         pub fn allocString(allocator: std.mem.Allocator, str: []const u8) !*Value.Obj {
             const str_obj = try allocator.create(Value.Obj);
-            str_obj.* = .{ .string = .{ .str = try allocator.dupe(u8, str) } };
+            str_obj.* = .{
+                .kind = .{
+                    .string = .{ .str = try allocator.dupe(u8, str) },
+                },
+            };
             return str_obj;
         }
 
         pub fn allocUpvalue(allocator: std.mem.Allocator, slot_index: usize) !*Value.Obj {
             const upvalue_obj = try allocator.create(Value.Obj);
-            upvalue_obj.* = .{ .upvalue = .{ .location = slot_index } };
+            upvalue_obj.* = .{
+                .kind = .{
+                    .upvalue = .{ .location = slot_index },
+                },
+            };
             return upvalue_obj;
         }
 
         pub fn free(self: *Value.Obj, allocator: std.mem.Allocator) void {
-            switch (self.*) {
+            switch (self.kind) {
                 .string => |s| {
                     allocator.free(s.str);
                 },
                 .function => |f| {
                     if (f.name) |obj| obj.free(allocator);
-                },
-                .upvalue => |up| {
-                    allocator.destroy(up);
+                    // We must also free the chunk
+                    var mutable_f = f;
+                    mutable_f.chunk.deinit();
                 },
                 .closure => |cl| {
                     cl.upvalues.deinit(allocator);
                 },
+                else => {},
             }
 
             allocator.destroy(self);

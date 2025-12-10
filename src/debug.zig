@@ -1,9 +1,10 @@
 const std = @import("std");
-const util = @import("util.zig");
+
 const Chunk = @import("bytecode.zig").Chunk;
+const Compiler = @import("compiler.zig").Compiler;
 const Opcode = @import("bytecode.zig").Opcode;
 const Token = @import("scanner.zig").Token;
-const Compiler = @import("compiler.zig").Compiler;
+const util = @import("util.zig");
 const Value = @import("value.zig").Value;
 
 // ANSI Color codes for terminal output

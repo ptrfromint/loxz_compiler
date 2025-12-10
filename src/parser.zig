@@ -1,8 +1,9 @@
 const std = @import("std");
-const debug = @import("debug.zig");
-const Token = @import("scanner.zig").Token;
-const Scanner = @import("scanner.zig").Scanner;
+
 const Compiler = @import("compiler.zig").Compiler;
+const debug = @import("debug.zig");
+const Scanner = @import("scanner.zig").Scanner;
+const Token = @import("scanner.zig").Token;
 
 pub const Parser = struct {
     current: ?Token,

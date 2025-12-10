@@ -1,9 +1,10 @@
 const std = @import("std");
+
 const Chunk = @import("bytecode.zig").Chunk;
-const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
 const Compiler = @import("compiler.zig").Compiler;
 const debug = @import("debug.zig");
 const Value = @import("value.zig").Value;
+const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
 
 fn repl() !void {
     var stdin = std.fs.File.stdin().reader(&.{});

@@ -1,6 +1,7 @@
 const std = @import("std");
-const Value = @import("value.zig").Value;
+
 const bit_utils = @import("util.zig");
+const Value = @import("value.zig").Value;
 
 pub const Opcode = enum(u8) {
     @"return",
