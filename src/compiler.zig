@@ -4,6 +4,7 @@ const bytecode = @import("bytecode.zig");
 const Chunk = bytecode.Chunk;
 const Opcode = bytecode.Opcode;
 const debug = @import("debug.zig");
+const GarbageCollector = @import("garbage_collector.zig").GarbageCollector;
 const Parser = @import("parser.zig").Parser;
 const Scanner = @import("scanner.zig").Scanner;
 const Token = @import("scanner.zig").Token;
@@ -68,14 +69,6 @@ pub const FunctionState = struct {
                 return try self.addUpvalue(allocator, .{ .index = index, .capture_scope = .local });
             }
 
-            // NOTE: if we haven't found the variable in the immediate local enclosure
-            // we recurse going up the parent enclosures until we hit the base case.
-            // Once we've hit the base case, we chain upvalues going down the call stack
-            // until we return here to the original call, almost like this:
-            //           search            <-       search            <-   "we need x!"
-            // func_state1 locals [0: "x"] <- func_state2 upvalues[]  <- self upvalues[]
-            //           find local        ->      set upvalue        ->  set original upvalue
-            // func_state1 locals [0: "x"] -> func_state2 upvalues[0] -> self upvalues[0]
             if (try parent_func.resolveUpvalue(allocator, name)) |upvalue| {
                 return try self.addUpvalue(allocator, .{ .index = upvalue, .capture_scope = .outer });
             }
@@ -101,10 +94,15 @@ pub const FunctionState = struct {
 };
 
 pub const Compiler = struct {
-    arena: *std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
     scanner: *Scanner,
     parser: *Parser,
+
+    // We keep track of the root state to free it in deinit,
+    // separate from the current state which might be on the stack.
+    root_function_state: *FunctionState,
     current_function: *FunctionState,
+
     objects: *?*Value.Obj,
 
     pub const Error = error{CompilationError};
@@ -124,37 +122,33 @@ pub const Compiler = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, objects: *?*Value.Obj, source: []const u8) !Compiler {
-        const arena_ptr = try allocator.create(std.heap.ArenaAllocator);
-        arena_ptr.* = std.heap.ArenaAllocator.init(allocator);
+        const scanner = try allocator.create(Scanner);
+        scanner.* = .init(allocator, source);
 
-        const alloc = arena_ptr.allocator();
-
-        const scanner = try alloc.create(Scanner);
-        scanner.* = .init(alloc, source);
-
-        const parser = try alloc.create(Parser);
+        const parser = try allocator.create(Parser);
         parser.* = .init(scanner);
 
-        const func_state = try alloc.create(FunctionState);
+        const func_state = try allocator.create(FunctionState);
         func_state.* = .{
             .locals = .empty,
             .upvalues = .empty,
             .depth = 0,
-            .function = try Value.Obj.allocFunc(alloc, objects, 0, null),
+            .function = try Value.Obj.allocFunc(allocator, objects, 0, null),
             .func_type = .script,
             .enclosing = null,
         };
 
         // Reserve the first slot for the VM
-        try func_state.locals.append(alloc, .{
+        try func_state.locals.append(allocator, .{
             .name = .{ .lexeme = "", .line = 0, .type = .identifier },
             .depth = 0,
         });
 
         return .{
-            .arena = arena_ptr,
+            .allocator = allocator,
             .scanner = scanner,
             .parser = parser,
+            .root_function_state = func_state,
             .current_function = func_state,
             .objects = objects,
         };
@@ -162,10 +156,21 @@ pub const Compiler = struct {
 
     pub fn deinit(self: *Compiler) void {
         self.scanner.deinit();
+        self.allocator.destroy(self.scanner);
+        self.allocator.destroy(self.parser);
 
-        const child_allocator = self.arena.child_allocator;
-        self.arena.deinit();
-        child_allocator.destroy(self.arena);
+        // Free the root function state logic
+        self.root_function_state.locals.deinit(self.allocator);
+        self.root_function_state.upvalues.deinit(self.allocator);
+        self.allocator.destroy(self.root_function_state);
+    }
+
+    pub fn markRoots(self: *Compiler, gc: *GarbageCollector) !void {
+        var func: ?*FunctionState = self.current_function;
+        while (func) |f| {
+            try gc.markObject(f.function);
+            func = f.enclosing;
+        }
     }
 
     pub fn compile(self: *Compiler) !*Value.Obj {
@@ -276,7 +281,8 @@ pub const Compiler = struct {
     }
 
     fn function(self: *Compiler, func_type: FunctionType) !void {
-        const allocator = self.arena.allocator();
+        // We use the same allocator (GC)
+        const allocator = self.allocator;
 
         var func_state: FunctionState = .{
             .func_type = func_type,
@@ -484,7 +490,7 @@ pub const Compiler = struct {
     }
 
     fn identifierConstant(self: *Compiler, name: Token) !usize {
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
         return try self.currentChunk().addConstant(.{
             .obj = try Value.Obj.allocString(allocator, self.objects, name.lexeme),
         });
@@ -537,7 +543,7 @@ pub const Compiler = struct {
     }
 
     fn addLocal(self: *Compiler, name: Token) !void {
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
 
         try self.current_function.locals.append(allocator, .{
             .name = name,
@@ -706,7 +712,7 @@ pub const Compiler = struct {
 
     fn string(self: *Compiler, can_assign: bool) !void {
         _ = can_assign;
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
         try self.emitConstant(.{
             .obj = try Value.Obj.allocString(allocator, self.objects, self.parser.previous.?.lexeme),
         });
@@ -739,7 +745,7 @@ pub const Compiler = struct {
     }
 
     fn namedVariable(self: *Compiler, name: Token, can_assign: bool) !void {
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
 
         if (try self.current_function.resolveLocal(name)) |local| {
             if (try self.match(.equal) and can_assign) {

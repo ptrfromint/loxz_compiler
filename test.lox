@@ -1,13 +1,18 @@
-fun doubler(num) {
-  fun double() {
-      return num * 2;
+fun makeClosure(x) {
+  fun inner() {
+    return x + 1;
   }
 
-  return double;
-} 
+  return inner;
+}
 
-var forty = doubler(20);
-var sixty = doubler(30);
+var counter = 0;
+for(var i = 0; i < 100000; i = i + 1) {
+  if (counter == 500) {
+    print i;
+    counter = 0;
+  }
 
-print forty();
-print sixty();
+  var c = makeClosure(i);
+  counter = counter + 1;
+}

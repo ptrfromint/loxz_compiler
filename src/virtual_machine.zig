@@ -6,39 +6,99 @@ const Opcode = bytecode.Opcode;
 const CallFrame = @import("compiler.zig").CallFrame;
 const Color = @import("debug.zig").Color;
 const Compiler = @import("compiler.zig").Compiler;
+const GarbageCollector = @import("garbage_collector.zig").GarbageCollector;
 const util = @import("util.zig");
 const Value = @import("value.zig").Value;
 
-pub const InterpreterError = error{ CompilationError, RuntimeError, OutOfMemory };
+pub const InterpreterError = error{
+    CompilationError,
+    RuntimeError,
+    OutOfMemory,
+};
 
 pub const VirtualMachine = struct {
     call_stack: std.ArrayList(CallFrame),
     stack: std.ArrayList(Value),
     globals: std.StringHashMap(Value),
     open_upvalues: ?*Value.Obj = null,
+
+    // The head of the linked list of all allocated objects.
+    // The VM owns this list and is responsible for freeing it on deinit.
     objects: ?*Value.Obj = null,
-    arena: std.heap.ArenaAllocator,
+
+    // We store the allocator here to use for stack/call_stack growth.
+    // This is typically the GarbageCollector's allocator.
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) VirtualMachine {
         return .{
             .call_stack = .empty,
             .stack = .empty,
             .globals = .init(allocator),
-            .arena = .init(allocator),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *VirtualMachine) void {
         self.globals.deinit();
-        self.arena.deinit();
+        self.call_stack.deinit(self.allocator);
+        self.stack.deinit(self.allocator);
+
+        // Explicitly free all objects tracked by the VM.
+        // We walk the linked list and free each object using the allocator.
+        var obj = self.objects;
+        while (obj) |o| {
+            const next = o.next;
+            o.free(self.allocator);
+            obj = next;
+        }
+    }
+
+    /// Called by the GarbageCollector to mark all roots reachable from the VM.
+    pub fn markRoots(self: *VirtualMachine, gc: *GarbageCollector) !void {
+        // 1. Mark values on the Stack
+        for (self.stack.items) |val| {
+            try gc.markValue(val);
+        }
+
+        // 2. Mark Global variables
+        var it = self.globals.iterator();
+        while (it.next()) |entry| {
+            try gc.markValue(entry.value_ptr.*);
+        }
+
+        // 3. Mark Call Frames (specifically the closures they are executing)
+        for (self.call_stack.items) |frame| {
+            try gc.markObject(frame.closure);
+        }
+
+        // 4. Mark Open Upvalues (upvalues pointing to stack slots that haven't been closed yet)
+        var upvalue = self.open_upvalues;
+        while (upvalue) |u| {
+            try gc.markObject(u);
+            upvalue = u.kind.upvalue.next;
+        }
     }
 
     pub fn interpret(self: *VirtualMachine, source: []const u8) InterpreterError!void {
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
 
         try self.defineNativeFunction("clock", nativeClock);
 
+        // We assume the allocator passed to init() is our GarbageCollector.
+        // We register the compiler with it so that objects created during compilation
+        // (but not yet assigned to the VM) are not collected.
+        const gc: *GarbageCollector = @ptrCast(@alignCast(allocator.ptr));
+
         var compiler: Compiler = try .init(allocator, &self.objects, source);
+
+        // Register compiler as a source of roots for the GC
+        gc.compiler = &compiler;
+        defer {
+            gc.compiler = null;
+            compiler.deinit();
+        }
+
         const func = compiler.compile() catch return InterpreterError.CompilationError;
 
         const main_closure = try Value.Obj.allocClosure(allocator, &self.objects, func);
@@ -53,7 +113,7 @@ pub const VirtualMachine = struct {
         callee: *Value.Obj,
         arg_count: usize,
     ) !void {
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
 
         switch (callee.kind) {
             .closure => return try self.call(callee, arg_count),
@@ -64,7 +124,7 @@ pub const VirtualMachine = struct {
                 // Pop the arguments off the stack
                 for (0..arg_count) |_| _ = self.stack.pop();
 
-                // FIX: Pop the native function itself off the stack as well
+                // Pop the native function itself off the stack as well
                 _ = self.stack.pop();
 
                 try self.stack.append(allocator, result);
@@ -84,7 +144,7 @@ pub const VirtualMachine = struct {
             return self.runtimeError("Stack overflow.", .{});
         }
 
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
         try self.call_stack.append(allocator, .{
             .closure = closure_obj,
             .ip = 0,
@@ -109,7 +169,7 @@ pub const VirtualMachine = struct {
     }
 
     pub fn run(self: *VirtualMachine) !void {
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
 
         // Load the current frame
         var frame = &self.call_stack.items[self.call_stack.items.len - 1];
@@ -126,9 +186,7 @@ pub const VirtualMachine = struct {
                 .@"return" => {
                     const result = self.stack.pop();
 
-                    // FIX: Capture the slot_start of the function we are LEAVING
                     const close_up = frame.slot_start;
-
                     self.closeUpvalues(close_up);
 
                     _ = self.call_stack.pop();
@@ -143,7 +201,7 @@ pub const VirtualMachine = struct {
                     chunk = &frame.closure.kind.closure.function.kind.function.chunk;
                     ip = frame.ip;
 
-                    // FIX: Truncate stack to the start of the function we just LEFT
+                    // Truncate stack to the start of the function we just LEFT
                     self.stack.items.len = close_up;
                     try self.stack.append(allocator, result.?);
                 },
@@ -482,6 +540,7 @@ pub const VirtualMachine = struct {
 
     fn concatStringWithNum(allocator: std.mem.Allocator, objects: *?*Value.Obj, str: Value.Obj.String, num: f64) !*Value.Obj {
         const new_str = try std.fmt.allocPrint(allocator, "{s}{}", .{ str.str, num });
+        defer allocator.free(new_str);
         const obj = try Value.Obj.allocString(allocator, objects, new_str);
         return obj;
     }
@@ -535,7 +594,7 @@ pub const VirtualMachine = struct {
         name: []const u8,
         func: Value.Obj.NativeFunction.Ptr,
     ) !void {
-        const allocator = self.arena.allocator();
+        const allocator = self.allocator;
         const native_fn = try Value.Obj.allocNativeFn(allocator, &self.objects, func);
 
         try self.globals.put(name, .{ .obj = native_fn });

@@ -138,12 +138,11 @@ pub const Value = union(enum) {
                     allocator.free(s.str);
                 },
                 .function => |f| {
-                    if (f.name) |obj| obj.free(allocator);
                     // We must also free the chunk
                     var mutable_f = f;
                     mutable_f.chunk.deinit();
                 },
-                .closure => |cl| {
+                .closure => |*cl| {
                     cl.upvalues.deinit(allocator);
                 },
                 else => {},

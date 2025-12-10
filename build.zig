@@ -16,6 +16,16 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    const debug_logs = b.option(
+        bool,
+        "show_debug_logs",
+        "Build option to display all debug logs while running.",
+    ) orelse false;
+
+    const options = b.addOptions();
+    options.addOption(bool, "show_debug", debug_logs);
+    exe.root_module.addOptions("build_options", options);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
