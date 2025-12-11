@@ -500,6 +500,60 @@ pub const VirtualMachine = struct {
                     const class = try Value.Obj.allocClass(allocator, &self.objects, name);
                     try self.stack.append(allocator, .{ .obj = class });
                 },
+                .get_property => {
+                    const stack_value = self.stack.getLast();
+
+                    const instance = switch (stack_value) {
+                        .obj => |obj| switch (obj.kind) {
+                            .instance => |inst| inst,
+                            else => return self.runtimeError("Attempted to access property of non-instance", .{}),
+                        },
+                        else => return self.runtimeError("Attempted to access property of non-instance", .{}),
+                    };
+
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const str = chunk.constants.items[index];
+                    const field = switch (str.obj.kind) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
+
+                    if (instance.fields.get(field)) |value| {
+                        _ = self.stack.pop(); // Pop the instance
+                        try self.stack.append(allocator, value);
+                    } else {
+                        const class_name = instance.class.kind.class.name.kind.string.str;
+                        return self.runtimeError("Undefined property {s} on instance of {s}.", .{ field, class_name });
+                    }
+                },
+                .set_property => {
+                    const instance_value = self.stack.items[self.stack.items.len - 2];
+
+                    const instance = switch (instance_value) {
+                        .obj => |obj| switch (obj.kind) {
+                            .instance => |*inst| inst,
+                            else => return self.runtimeError("Attempted to access property of non-instance", .{}),
+                        },
+                        else => return self.runtimeError("Attempted to access property of non-instance", .{}),
+                    };
+
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const str = chunk.constants.items[index];
+                    const field_name = switch (str.obj.kind) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
+
+                    try instance.fields.put(field_name, self.stack.getLast());
+
+                    const value = self.stack.pop() orelse return self.runtimeError("Popped stack with no values", .{});
+                    _ = self.stack.pop(); // Pop the instance
+                    try self.stack.append(allocator, value);
+                },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
                 },

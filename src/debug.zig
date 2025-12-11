@@ -49,7 +49,7 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
     if (offset > 0 and line == chunk.getLine(offset - 1)) {
         std.debug.print("   |  ", .{});
     } else {
-        std.debug.print("{s}{: >4}{s}  ", .{ Color.Blue, line, Color.Dim });
+        std.debug.print("{s}{: >4}{s}  ", .{ Color.Reset ++ Color.Bold ++ Color.Magenta, line, Color.Dim });
     }
 
     // 3. Print Opcode Name (Bold White)
@@ -84,11 +84,51 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
             std.debug.print("{s}slot {d}{s}\n", .{ Color.Magenta, index, Color.Reset });
             return offset + 2;
         },
+        .class, .get_property, .set_property => {
+            if (offset + 1 >= code_len) @panic("truncated instruction");
+            const index = chunk.code.items[offset + 1];
+            const val = chunk.constants.items[@intCast(index)];
+
+            std.debug.print("{s}[{d}]{s} ", .{ Color.Cyan, index, Color.Reset });
+            printValue(val);
+            std.debug.print("\n", .{});
+            return offset + 2;
+        },
         .get_local_long, .set_local_long => {
             if (offset + 3 >= code_len) @panic("truncated instruction");
             const index = util.readU24LE(chunk.code.items[offset + 1 .. offset + 4]);
             std.debug.print("{s}slot {d}{s}\n", .{ Color.Magenta, index, Color.Reset });
             return offset + 4;
+        },
+        .call => {
+            if (offset + 1 >= code_len) @panic("truncated instruction");
+            const arg_count = chunk.code.items[offset + 1];
+            std.debug.print("{d} args\n", .{arg_count});
+            return offset + 2;
+        },
+        .closure => {
+            if (offset + 1 >= code_len) @panic("truncated instruction");
+            const index = chunk.code.items[offset + 1];
+            const val = chunk.constants.items[index];
+
+            std.debug.print("{s}[{d}]{s} ", .{ Color.Cyan, index, Color.Reset });
+            printValue(val);
+            std.debug.print("\n", .{});
+
+            const function = val.obj.kind.function;
+            var i: usize = 0;
+            var current_offset = offset + 2;
+            while (i < function.upvalue_count) : (i += 1) {
+                const is_local = chunk.code.items[current_offset];
+                const upvalue_index = chunk.code.items[current_offset + 1];
+                std.debug.print("{:0>4}      |                     {s} {d}\n", .{
+                    current_offset,
+                    if (is_local == 1) "local" else "upvalue",
+                    upvalue_index,
+                });
+                current_offset += 2;
+            }
+            return current_offset;
         },
         .jump, .jump_if_false, .loop => {
             if (offset + 2 >= code_len) @panic("truncated instruction");

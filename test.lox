@@ -1,6 +1,5 @@
-class Abc {}
-
-var test = "dsadsadsad";
-print test;
-
-print Abc();
+class Pair {}
+var pair = Pair();
+pair.first = 1;
+pair.second = 2;
+print pair.first + pair.second; // Expected output = 3

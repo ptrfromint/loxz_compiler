@@ -641,6 +641,18 @@ pub const Compiler = struct {
         return debug.errorAt(self.parser.previous.?, "Expected expression.");
     }
 
+    fn dot(self: *Compiler, can_assign: bool) !void {
+        try self.parser.consume(.identifier, "Expected property name after '.' access.");
+        const name_index = try self.identifierConstant(self.parser.previous.?);
+
+        if (can_assign and try self.match(.equal)) {
+            try self.expression();
+            try self.emitBytes(&.{ @intFromEnum(Opcode.set_property), @truncate(name_index) });
+        } else {
+            try self.emitBytes(&.{ @intFromEnum(Opcode.get_property), @truncate(name_index) });
+        }
+    }
+
     fn number(self: *Compiler, can_assign: bool) !void {
         _ = can_assign;
         std.debug.assert(self.parser.previous != null);
@@ -808,6 +820,7 @@ pub const Compiler = struct {
             .identifier => .{ .prefix = Compiler.variable, .infix = null, .precedence = .none },
             .@"and" => .{ .prefix = null, .infix = Compiler.@"and", .precedence = .@"and" },
             .@"or" => .{ .prefix = null, .infix = Compiler.@"or", .precedence = .@"or" },
+            .dot => .{ .prefix = null, .infix = Compiler.dot, .precedence = .call },
             else => .{ .prefix = null, .infix = null, .precedence = .none },
         };
     }
