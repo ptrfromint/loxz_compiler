@@ -27,8 +27,9 @@ fn printValue(value: Value) void {
         .float => |v| std.debug.print("{s}{d}{s}", .{ Color.Yellow, v, Color.Reset }),
         .boolean => |v| std.debug.print("{s}{}{s}", .{ Color.Magenta, v, Color.Reset }),
         .nil => std.debug.print("{s}nil{s}", .{ Color.Red, Color.Reset }),
-        .obj => |o| switch (o.*) {
-            .string => |s| std.debug.print("{s}\"{s}\"{s}", .{ Color.Green, s.kind.string.str, Color.Reset }),
+        .obj => |o| switch (o.kind) {
+            .string => |s| std.debug.print("{s}\"{s}\"{s}", .{ Color.Green, s.str, Color.Reset }),
+            else => std.debug.print("{s}{f}{s}", .{ Color.Green, o.kind, Color.Reset }),
         },
     }
 }

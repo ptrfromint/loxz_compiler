@@ -1,18 +1,6 @@
-fun makeClosure(x) {
-  fun inner() {
-    return x + 1;
-  }
+class Abc {}
 
-  return inner;
-}
+var test = "dsadsadsad";
+print test;
 
-var counter = 0;
-for(var i = 0; i < 1000000; i = i + 1) {
-  if (counter == 500) {
-    print i;
-    counter = 0;
-  }
-
-  var c = makeClosure(i);
-  counter = counter + 1;
-}
+print Abc;

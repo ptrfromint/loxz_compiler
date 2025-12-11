@@ -197,6 +197,9 @@ pub const GarbageCollector = struct {
             .upvalue => |*upvalue| {
                 try self.markValue(upvalue.closed);
             },
+            .class => |class| {
+                try self.markObject(class.name);
+            },
             // Native functions and strings have no outgoing references to other Objects.
             .native_function, .string => {},
         }

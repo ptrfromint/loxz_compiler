@@ -205,13 +205,27 @@ pub const Compiler = struct {
     }
 
     fn declaration(self: *Compiler) CompilerErrorSet!void {
-        if (try self.match(.fun)) {
+        if (try self.match(.class)) {
+            try self.classDeclaration();
+        } else if (try self.match(.fun)) {
             try self.funDeclaration();
         } else if (try self.match(.@"var")) {
             try self.varDeclaration();
         } else {
             try self.statement();
         }
+    }
+
+    fn classDeclaration(self: *Compiler) !void {
+        try self.parser.consume(.identifier, "Expected class name.");
+        const name_constant = try self.identifierConstant(self.parser.previous.?);
+        try self.declareVariable();
+
+        try self.emitBytes(&.{ @intFromEnum(Opcode.class), @truncate(name_constant) });
+        try self.defineVariable(name_constant);
+
+        try self.parser.consume(.left_brace, "Expect '{' before class body.");
+        try self.parser.consume(.right_brace, "Expect '}' after class body.");
     }
 
     fn funDeclaration(self: *Compiler) !void {

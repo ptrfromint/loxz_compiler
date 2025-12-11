@@ -483,6 +483,19 @@ pub const VirtualMachine = struct {
                     self.closeUpvalues(self.stack.items.len - 1);
                     _ = self.stack.pop();
                 },
+                .class => {
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const str = chunk.constants.items[index];
+                    const name = switch (str.obj.kind) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
+
+                    const class = try Value.Obj.allocClass(allocator, &self.objects, name);
+                    try self.stack.append(allocator, .{ .obj = class });
+                },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
                 },

@@ -14,6 +14,7 @@ pub const Value = union(enum) {
             native_function: NativeFunction,
             closure: Closure,
             upvalue: Upvalue,
+            class: Class,
 
             pub fn format(this: *const Kind, w: *std.io.Writer) !void {
                 switch (this.*) {
@@ -26,6 +27,7 @@ pub const Value = union(enum) {
                     .native_function => |*nf| try w.print("<native fn @ {*}>", .{nf}),
                     .closure => |*c| try w.print("<closure @ {*}>\n{f}", .{ c, c.function.kind }),
                     .upvalue => |_| try w.print("<upvalue>", .{}),
+                    .class => |c| try w.print("<Class {s}>", .{c.name.kind.string.str}),
                 }
             }
         };
@@ -56,6 +58,10 @@ pub const Value = union(enum) {
             location: ?usize,
             closed: Value = .nil,
             next: ?*Value.Obj = null,
+        };
+
+        pub const Class = struct {
+            name: *Value.Obj,
         };
 
         pub fn format(this: *const Obj, w: *std.io.Writer) !void {
@@ -130,6 +136,18 @@ pub const Value = union(enum) {
             };
             objects.* = upvalue_obj;
             return upvalue_obj;
+        }
+
+        pub fn allocClass(allocator: std.mem.Allocator, objects: *?*Value.Obj, name: []const u8) !*Value.Obj {
+            const class_obj = try allocator.create(Value.Obj);
+            class_obj.* = .{
+                .kind = .{
+                    .class = .{ .name = try Value.Obj.allocString(allocator, objects, name) },
+                },
+                .next = objects.*,
+            };
+            objects.* = class_obj;
+            return class_obj;
         }
 
         pub fn free(self: *Value.Obj, allocator: std.mem.Allocator) void {
