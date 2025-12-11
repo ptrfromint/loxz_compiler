@@ -3,4 +3,4 @@ class Abc {}
 var test = "dsadsadsad";
 print test;
 
-print Abc;
+print Abc();

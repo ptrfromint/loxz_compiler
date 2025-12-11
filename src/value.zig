@@ -15,6 +15,7 @@ pub const Value = union(enum) {
             closure: Closure,
             upvalue: Upvalue,
             class: Class,
+            instance: Instance,
 
             pub fn format(this: *const Kind, w: *std.io.Writer) !void {
                 switch (this.*) {
@@ -28,6 +29,13 @@ pub const Value = union(enum) {
                     .closure => |*c| try w.print("<closure @ {*}>\n{f}", .{ c, c.function.kind }),
                     .upvalue => |_| try w.print("<upvalue>", .{}),
                     .class => |c| try w.print("<Class {s}>", .{c.name.kind.string.str}),
+                    .instance => |inst| {
+                        try w.print("Instance of {f}:\n", .{inst.class});
+                        var iter = inst.fields.iterator();
+                        while (iter.next()) |entry| {
+                            try w.print("{s}: {f}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                        }
+                    },
                 }
             }
         };
@@ -62,6 +70,11 @@ pub const Value = union(enum) {
 
         pub const Class = struct {
             name: *Value.Obj,
+        };
+
+        pub const Instance = struct {
+            class: *Value.Obj,
+            fields: std.StringHashMap(Value),
         };
 
         pub fn format(this: *const Obj, w: *std.io.Writer) !void {
@@ -150,6 +163,18 @@ pub const Value = union(enum) {
             return class_obj;
         }
 
+        pub fn allocInstance(allocator: std.mem.Allocator, objects: *?*Value.Obj, class: *Value.Obj) !*Value.Obj {
+            const instance_obj = try allocator.create(Value.Obj);
+            instance_obj.* = .{
+                .kind = .{
+                    .instance = .{ .class = class, .fields = .init(allocator) },
+                },
+                .next = objects.*,
+            };
+            objects.* = instance_obj;
+            return instance_obj;
+        }
+
         pub fn free(self: *Value.Obj, allocator: std.mem.Allocator) void {
             switch (self.kind) {
                 .string => |s| {
@@ -162,6 +187,9 @@ pub const Value = union(enum) {
                 },
                 .closure => |*cl| {
                     cl.upvalues.deinit(allocator);
+                },
+                .instance => |*inst| {
+                    inst.fields.deinit();
                 },
                 else => {},
             }

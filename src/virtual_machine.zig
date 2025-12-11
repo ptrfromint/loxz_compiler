@@ -127,6 +127,10 @@ pub const VirtualMachine = struct {
 
                 try self.stack.append(allocator, result);
             },
+            .class => {
+                const instance = try Value.Obj.allocInstance(allocator, &self.objects, callee);
+                self.stack.items[self.stack.items.len - arg_count - 1] = .{ .obj = instance };
+            },
             else => return self.runtimeError("Can only call functions(closures) and classes.", .{}),
         }
     }

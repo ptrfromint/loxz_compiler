@@ -200,8 +200,21 @@ pub const GarbageCollector = struct {
             .class => |class| {
                 try self.markObject(class.name);
             },
+            .instance => |*inst| {
+                try self.markObject(inst.class);
+                try self.markHashmap(inst.fields);
+            },
             // Native functions and strings have no outgoing references to other Objects.
             .native_function, .string => {},
+        }
+    }
+
+    /// Helper to mark the values of a std.StringHashMap(Value)
+    pub fn markHashmap(self: *GarbageCollector, hashmap: std.StringHashMap(Value)) !void {
+        var iter = hashmap.valueIterator();
+
+        while (iter.next()) |value| {
+            try self.markValue(value.*);
         }
     }
 
