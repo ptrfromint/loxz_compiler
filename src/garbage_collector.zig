@@ -199,10 +199,15 @@ pub const GarbageCollector = struct {
             },
             .class => |class| {
                 try self.markObject(class.name);
+                try self.markHashmap(class.methods);
             },
             .instance => |*inst| {
                 try self.markObject(inst.class);
                 try self.markHashmap(inst.fields);
+            },
+            .bound_method => |*bm| {
+                try self.markValue(bm.receiver);
+                try self.markObject(bm.method);
             },
             // Native functions and strings have no outgoing references to other Objects.
             .native_function, .string => {},

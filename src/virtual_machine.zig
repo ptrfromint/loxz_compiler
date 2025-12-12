@@ -131,6 +131,7 @@ pub const VirtualMachine = struct {
                 const instance = try Value.Obj.allocInstance(allocator, &self.objects, callee);
                 self.stack.items[self.stack.items.len - arg_count - 1] = .{ .obj = instance };
             },
+            .bound_method => return try self.call(callee.kind.bound_method.method, arg_count),
             else => return self.runtimeError("Can only call functions(closures) and classes.", .{}),
         }
     }
@@ -515,17 +516,16 @@ pub const VirtualMachine = struct {
                     ip += 1;
 
                     const str = chunk.constants.items[index];
-                    const field = switch (str.obj.kind) {
+                    const field_name = switch (str.obj.kind) {
                         .string => |s| s.str,
                         else => unreachable,
                     };
 
-                    if (instance.fields.get(field)) |value| {
+                    if (instance.fields.get(field_name)) |value| {
                         _ = self.stack.pop(); // Pop the instance
                         try self.stack.append(allocator, value);
                     } else {
-                        const class_name = instance.class.kind.class.name.kind.string.str;
-                        return self.runtimeError("Undefined property {s} on instance of {s}.", .{ field, class_name });
+                        try instance.class.kind.class.bindMethod(self, field_name);
                     }
                 },
                 .set_property => {
@@ -553,6 +553,18 @@ pub const VirtualMachine = struct {
                     const value = self.stack.pop() orelse return self.runtimeError("Popped stack with no values", .{});
                     _ = self.stack.pop(); // Pop the instance
                     try self.stack.append(allocator, value);
+                },
+                .method => {
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const str = chunk.constants.items[index];
+                    const method_name = switch (str.obj.kind) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
+
+                    try self.defineMethod(method_name);
                 },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
@@ -598,6 +610,23 @@ pub const VirtualMachine = struct {
             // Sync IP back to frame
             frame.ip = ip;
         }
+    }
+
+    fn defineMethod(self: *VirtualMachine, name: []const u8) !void {
+        const class_value = self.stack.items[self.stack.items.len - 2];
+
+        const class = switch (class_value) {
+            .obj => |obj| switch (obj.kind) {
+                .class => |*class| class,
+                else => return self.runtimeError("Attempted to define method on non-class", .{}),
+            },
+            else => return self.runtimeError("Attempted to define method on non-class", .{}),
+        };
+
+        const method = self.stack.getLast();
+        try class.methods.put(name, method);
+
+        _ = self.stack.pop(); // pop closure of the method
     }
 
     fn concatStrings(allocator: std.mem.Allocator, objects: *?*Value.Obj, str_a: Value.Obj.String, str_b: Value.Obj.String) !*Value.Obj {

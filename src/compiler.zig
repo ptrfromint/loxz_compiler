@@ -218,14 +218,24 @@ pub const Compiler = struct {
 
     fn classDeclaration(self: *Compiler) !void {
         try self.parser.consume(.identifier, "Expected class name.");
+        const class_name = self.parser.previous.?;
         const name_constant = try self.identifierConstant(self.parser.previous.?);
         try self.declareVariable();
 
         try self.emitBytes(&.{ @intFromEnum(Opcode.class), @truncate(name_constant) });
         try self.defineVariable(name_constant);
 
+        // Introduce local for the name of the class for when defining methods
+        try self.namedVariable(class_name, false);
         try self.parser.consume(.left_brace, "Expect '{' before class body.");
+
+        while (!self.check(.right_brace) and !self.check(.eof)) {
+            try self.method();
+        }
+
         try self.parser.consume(.right_brace, "Expect '}' after class body.");
+        // Pop the local since we no longer need it
+        try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
     }
 
     fn funDeclaration(self: *Compiler) !void {
@@ -292,6 +302,15 @@ pub const Compiler = struct {
                 break;
             }
         }
+    }
+
+    fn method(self: *Compiler) !void {
+        try self.parser.consume(.identifier, "Expected method name.");
+        const name_index = try self.identifierConstant(self.parser.previous.?);
+
+        try self.function(.function);
+
+        try self.emitBytes(&.{ @intFromEnum(Opcode.method), @truncate(name_index) });
     }
 
     fn function(self: *Compiler, func_type: FunctionType) !void {

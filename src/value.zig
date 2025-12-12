@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Chunk = @import("bytecode.zig").Chunk;
+const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
 
 pub const Value = union(enum) {
     pub const Obj = struct {
@@ -16,6 +17,7 @@ pub const Value = union(enum) {
             upvalue: Upvalue,
             class: Class,
             instance: Instance,
+            bound_method: BoundMethod,
 
             pub fn format(this: *const Kind, w: *std.io.Writer) !void {
                 switch (this.*) {
@@ -35,6 +37,9 @@ pub const Value = union(enum) {
                         while (iter.next()) |entry| {
                             try w.print("{s}: {f}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
                         }
+                    },
+                    .bound_method => |bm| {
+                        try w.print("Bound method: {f}", .{bm.method});
                     },
                 }
             }
@@ -70,11 +75,38 @@ pub const Value = union(enum) {
 
         pub const Class = struct {
             name: *Value.Obj,
+            methods: std.StringHashMap(Value),
+
+            pub fn bindMethod(
+                self: *Class,
+                vm: *VirtualMachine,
+                name: []const u8,
+            ) !void {
+                if (self.methods.get(name)) |method_val| {
+                    const method = try Value.Obj.allocBoundMethod(
+                        vm.allocator,
+                        &vm.objects,
+                        vm.stack.getLast(),
+                        method_val.obj,
+                    );
+
+                    _ = vm.stack.pop();
+                    try vm.stack.append(vm.allocator, .{ .obj = method });
+                    return;
+                }
+
+                return vm.runtimeError("Undefined property {s} on {f}", .{ name, self.name.* });
+            }
         };
 
         pub const Instance = struct {
             class: *Value.Obj,
             fields: std.StringHashMap(Value),
+        };
+
+        pub const BoundMethod = struct {
+            receiver: Value,
+            method: *Value.Obj,
         };
 
         pub fn format(this: *const Obj, w: *std.io.Writer) !void {
@@ -155,7 +187,10 @@ pub const Value = union(enum) {
             const class_obj = try allocator.create(Value.Obj);
             class_obj.* = .{
                 .kind = .{
-                    .class = .{ .name = try Value.Obj.allocString(allocator, objects, name) },
+                    .class = .{
+                        .name = try Value.Obj.allocString(allocator, objects, name),
+                        .methods = .init(allocator),
+                    },
                 },
                 .next = objects.*,
             };
@@ -167,12 +202,35 @@ pub const Value = union(enum) {
             const instance_obj = try allocator.create(Value.Obj);
             instance_obj.* = .{
                 .kind = .{
-                    .instance = .{ .class = class, .fields = .init(allocator) },
+                    .instance = .{
+                        .class = class,
+                        .fields = .init(allocator),
+                    },
                 },
                 .next = objects.*,
             };
             objects.* = instance_obj;
             return instance_obj;
+        }
+
+        pub fn allocBoundMethod(
+            allocator: std.mem.Allocator,
+            objects: *?*Value.Obj,
+            receiver: Value,
+            method: *Value.Obj,
+        ) !*Value.Obj {
+            const boundmethod_obj = try allocator.create(Value.Obj);
+            boundmethod_obj.* = .{
+                .kind = .{
+                    .bound_method = .{
+                        .receiver = receiver,
+                        .method = method,
+                    },
+                },
+                .next = objects.*,
+            };
+            objects.* = boundmethod_obj;
+            return boundmethod_obj;
         }
 
         pub fn free(self: *Value.Obj, allocator: std.mem.Allocator) void {
@@ -190,6 +248,9 @@ pub const Value = union(enum) {
                 },
                 .instance => |*inst| {
                     inst.fields.deinit();
+                },
+                .class => |*class| {
+                    class.methods.deinit();
                 },
                 else => {},
             }

@@ -1,5 +1,8 @@
-class Pair {}
-var pair = Pair();
-pair.first = 1;
-pair.second = 2;
-print pair.first + pair.second; // Expected output = 3
+class Person {
+    sayHi(name) {
+        print "Hello, " + name + "!";
+    }
+}
+
+var person = Person();
+person.sayHi("Joe");
