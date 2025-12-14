@@ -131,7 +131,11 @@ pub const VirtualMachine = struct {
                 const instance = try Value.Obj.allocInstance(allocator, &self.objects, callee);
                 self.stack.items[self.stack.items.len - arg_count - 1] = .{ .obj = instance };
             },
-            .bound_method => return try self.call(callee.kind.bound_method.method, arg_count),
+            .bound_method => {
+                const bound = callee.kind.bound_method;
+                self.stack.items[self.stack.items.len - 1 - arg_count] = bound.receiver;
+                return try self.call(bound.method, arg_count);
+            },
             else => return self.runtimeError("Can only call functions(closures) and classes.", .{}),
         }
     }

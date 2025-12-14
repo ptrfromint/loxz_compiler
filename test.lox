@@ -1,8 +1,12 @@
-class Person {
-    sayHi(name) {
-        print "Hello, " + name + "!";
+class Nested {
+    method() {
+        fun function() {
+            print this;
+        }
+
+        function();
     }
 }
 
-var person = Person();
-person.sayHi("Joe");
+var nested = Nested();
+nested.method();

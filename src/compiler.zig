@@ -19,7 +19,7 @@ pub const CallFrame = struct {
     slot_start: usize,
 };
 
-const FunctionType = enum { function, script };
+const FunctionType = enum { function, script, method };
 
 pub const FunctionState = struct {
     pub const Local = struct {
@@ -308,7 +308,7 @@ pub const Compiler = struct {
         try self.parser.consume(.identifier, "Expected method name.");
         const name_index = try self.identifierConstant(self.parser.previous.?);
 
-        try self.function(.function);
+        try self.function(.method);
 
         try self.emitBytes(&.{ @intFromEnum(Opcode.method), @truncate(name_index) });
     }
@@ -332,10 +332,16 @@ pub const Compiler = struct {
         const prev_func = self.current_function;
         self.current_function = &func_state;
 
-        try self.current_function.locals.append(allocator, .{
-            .name = .{ .lexeme = "", .line = 0, .type = .identifier },
-            .depth = 0,
-        });
+        switch (func_type) {
+            .function, .script => try self.current_function.locals.append(allocator, .{
+                .name = .{ .lexeme = "", .line = 0, .type = .identifier },
+                .depth = 0,
+            }),
+            .method => try self.current_function.locals.append(allocator, .{
+                .name = .{ .lexeme = "this", .line = 0, .type = .identifier },
+                .depth = 0,
+            }),
+        }
 
         try self.startScope();
 
@@ -660,6 +666,11 @@ pub const Compiler = struct {
         return debug.errorAt(self.parser.previous.?, "Expected expression.");
     }
 
+    fn this(self: *Compiler, can_assign: bool) !void {
+        _ = can_assign;
+        try self.variable(false);
+    }
+
     fn dot(self: *Compiler, can_assign: bool) !void {
         try self.parser.consume(.identifier, "Expected property name after '.' access.");
         const name_index = try self.identifierConstant(self.parser.previous.?);
@@ -840,6 +851,7 @@ pub const Compiler = struct {
             .@"and" => .{ .prefix = null, .infix = Compiler.@"and", .precedence = .@"and" },
             .@"or" => .{ .prefix = null, .infix = Compiler.@"or", .precedence = .@"or" },
             .dot => .{ .prefix = null, .infix = Compiler.dot, .precedence = .call },
+            .this => .{ .prefix = Compiler.this, .infix = null, .precedence = .none },
             else => .{ .prefix = null, .infix = null, .precedence = .none },
         };
     }
