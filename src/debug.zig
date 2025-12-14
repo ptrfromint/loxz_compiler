@@ -168,12 +168,12 @@ pub fn printChunk(chunk: *const Chunk, name: []const u8) void {
 }
 
 pub fn errorAt(token: Token, msg: []const u8) !void {
-    std.debug.print("{s}[line {}] Error{s}", .{ Color.Red, token.line, Color.Reset });
+    std.debug.print("{s}[line {}] Error at{s}", .{ Color.Red, token.line, Color.Reset });
 
     switch (token.type) {
-        .eof => std.debug.print(" at end", .{}),
+        .eof => std.debug.print(" end", .{}),
         .@"error" => {},
-        else => std.debug.print(" at '{s}{s}{s}'", .{ Color.Bold, token.lexeme, Color.Reset }),
+        else => std.debug.print(" '{s}{s}{s}'", .{ Color.Bold, token.lexeme, Color.Reset }),
     }
 
     std.debug.print(": {s}{s}{s}\n", .{ Color.Red, msg, Color.Reset });

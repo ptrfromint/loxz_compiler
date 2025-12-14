@@ -93,6 +93,11 @@ pub const FunctionState = struct {
     }
 };
 
+pub const ClassState = struct {
+    name: Token,
+    enclosing: ?*ClassState,
+};
+
 pub const Compiler = struct {
     allocator: std.mem.Allocator,
     scanner: *Scanner,
@@ -102,6 +107,7 @@ pub const Compiler = struct {
     // separate from the current state which might be on the stack.
     root_function_state: *FunctionState,
     current_function: *FunctionState,
+    current_class: ?*ClassState,
 
     objects: *?*Value.Obj,
 
@@ -150,6 +156,7 @@ pub const Compiler = struct {
             .parser = parser,
             .root_function_state = func_state,
             .current_function = func_state,
+            .current_class = null,
             .objects = objects,
         };
     }
@@ -224,6 +231,13 @@ pub const Compiler = struct {
 
         try self.emitBytes(&.{ @intFromEnum(Opcode.class), @truncate(name_constant) });
         try self.defineVariable(name_constant);
+
+        var class_state: ClassState = .{
+            .name = self.parser.previous.?,
+            .enclosing = self.current_class,
+        };
+        self.current_class = &class_state;
+        defer self.current_class = self.current_class.?.enclosing;
 
         // Introduce local for the name of the class for when defining methods
         try self.namedVariable(class_name, false);
@@ -667,6 +681,10 @@ pub const Compiler = struct {
     }
 
     fn this(self: *Compiler, can_assign: bool) !void {
+        if (self.current_class == null) {
+            return debug.errorAt(self.parser.previous.?, "Can't use 'this' outside of a class.");
+        }
+
         _ = can_assign;
         try self.variable(false);
     }

@@ -1,12 +1,16 @@
 class Nested {
-    method() {
-        fun function() {
-            print this;
+    method(n) {
+        fun function(n) {
+            if (n <= 1) return n;
+
+            return function(n - 1) + function(n - 2);
         }
 
-        function();
+        return function(n);
     }
 }
 
 var nested = Nested();
-nested.method();
+for (var i = 0; i <= 30; i = i + 1) {
+    print nested.method(i);
+}
