@@ -1,24 +1,26 @@
-class CoffeeMaker {
-	init() {
-		this.coffee = nil;
+class Person {
+	init(name, age) {
+		this.name = name;
+		this.age = age;
 	}
 
-	brew(coffee) {
-		print "Brewing some " + coffee + "...";
-		this.coffee = coffee;
-	}
-
-	drink() {
-		if (this.coffee) {
-			print "Mmm, this " + this.coffee + " is great!";
-			this.coffee = nil;
-		} else {
-			print "Drink what? There's nothing in the cup!";
-		}
+	sayHelloTo(other_person) {
+		print "Hello, " + other_person.name + "! My name is " + this.name + "!";
 	}
 }
 
-var coffee_maker = CoffeeMaker();
-coffee_maker.brew("Espresso");
-coffee_maker.drink();
-coffee_maker.drink();
+class Manager < Person {
+	init(name, age, salary) {
+		super.init(name, age);
+		this.salary = salary;
+	}
+
+	announce() {
+		print "Hello, my name is " + this.name + ", I'm " + this.age + " years old and I earn $" + this.salary + "!";
+	}
+}
+
+var person = Person("Joe Button", 30);
+var manager = Manager("Manager Button", 45, 50000);
+manager.announce();
+person.sayHelloTo(manager);

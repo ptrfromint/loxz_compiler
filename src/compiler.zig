@@ -96,6 +96,7 @@ pub const FunctionState = struct {
 pub const ClassState = struct {
     name: Token,
     enclosing: ?*ClassState,
+    has_superclass: bool,
 };
 
 pub const Compiler = struct {
@@ -240,9 +241,27 @@ pub const Compiler = struct {
         var class_state: ClassState = .{
             .name = self.parser.previous.?,
             .enclosing = self.current_class,
+            .has_superclass = false,
         };
         self.current_class = &class_state;
         defer self.current_class = self.current_class.?.enclosing;
+
+        if (try self.match(.less)) {
+            try self.parser.consume(.identifier, "Expected superclass name.");
+            try self.variable(false);
+
+            if (std.mem.eql(u8, class_name.lexeme, self.parser.previous.?.lexeme)) {
+                return debug.errorAt(self.parser.previous.?, "A class can't inherit from itself.");
+            }
+
+            try self.startScope();
+            try self.addLocal(.make(.identifier, "super", self.parser.current.?.line));
+            try self.defineVariable(0); // We just created the scope, hence index 0
+
+            try self.namedVariable(class_name, false);
+            try self.emitBytes(&.{@intFromEnum(Opcode.inherit)});
+            class_state.has_superclass = true;
+        }
 
         // Introduce local for the name of the class for when defining methods
         try self.namedVariable(class_name, false);
@@ -255,6 +274,8 @@ pub const Compiler = struct {
         try self.parser.consume(.right_brace, "Expect '}' after class body.");
         // Pop the local since we no longer need it
         try self.emitBytes(&.{@intFromEnum(Opcode.pop)});
+
+        if (class_state.has_superclass) try self.endScope();
     }
 
     fn funDeclaration(self: *Compiler) !void {
@@ -357,11 +378,11 @@ pub const Compiler = struct {
 
         switch (func_type) {
             .function, .script => try self.current_function.locals.append(allocator, .{
-                .name = .{ .lexeme = "", .line = 0, .type = .identifier },
+                .name = .synthetic(""),
                 .depth = 0,
             }),
             .method, .initializer => try self.current_function.locals.append(allocator, .{
-                .name = .{ .lexeme = "this", .line = 0, .type = .identifier },
+                .name = .synthetic("this"),
                 .depth = 0,
             }),
         }
@@ -694,12 +715,46 @@ pub const Compiler = struct {
     }
 
     fn this(self: *Compiler, can_assign: bool) !void {
+        _ = can_assign;
+
         if (self.current_class == null) {
             return debug.errorAt(self.parser.previous.?, "Can't use 'this' outside of a class.");
         }
 
-        _ = can_assign;
         try self.variable(false);
+    }
+
+    fn super(self: *Compiler, can_assign: bool) !void {
+        _ = can_assign;
+
+        if (self.current_class == null) {
+            return debug.errorAt(self.parser.previous.?, "Can't use 'super' outside of a class.");
+        }
+
+        if (!self.current_class.?.has_superclass) {
+            return debug.errorAt(self.parser.previous.?, "Can't use 'super' in a class with no superclass.");
+        }
+
+        try self.parser.consume(.dot, "Expected '.' after 'super'.");
+        try self.parser.consume(.identifier, "Expected superclass method name.");
+        const name_index = try self.identifierConstant(self.parser.previous.?);
+
+        try self.namedVariable(.synthetic("this"), false);
+        if (try self.match(.left_paren)) {
+            const arg_count = try self.argumentList();
+            try self.namedVariable(.synthetic("super"), false);
+            try self.emitBytes(&.{
+                @intFromEnum(Opcode.invoke_super),
+                @truncate(name_index),
+                arg_count,
+            });
+        } else {
+            try self.namedVariable(.synthetic("super"), false);
+            try self.emitBytes(&.{
+                @intFromEnum(Opcode.get_super),
+                @truncate(name_index),
+            });
+        }
     }
 
     fn dot(self: *Compiler, can_assign: bool) !void {
@@ -890,6 +945,7 @@ pub const Compiler = struct {
             .@"or" => .{ .prefix = null, .infix = Compiler.@"or", .precedence = .@"or" },
             .dot => .{ .prefix = null, .infix = Compiler.dot, .precedence = .call },
             .this => .{ .prefix = Compiler.this, .infix = null, .precedence = .none },
+            .super => .{ .prefix = Compiler.super, .infix = null, .precedence = .none },
             else => .{ .prefix = null, .infix = null, .precedence = .none },
         };
     }

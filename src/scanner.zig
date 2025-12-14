@@ -70,6 +70,14 @@ pub const Token = struct {
             .line = line,
         };
     }
+
+    pub fn synthetic(lexeme: []const u8) Token {
+        return .{
+            .type = .identifier,
+            .lexeme = lexeme,
+            .line = 0,
+        };
+    }
 };
 
 pub const Scanner = struct {

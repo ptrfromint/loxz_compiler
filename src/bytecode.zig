@@ -46,6 +46,9 @@ pub const Opcode = enum(u8) {
     set_property,
     method,
     invoke,
+    inherit,
+    get_super,
+    invoke_super,
 };
 
 pub const LineRun = struct {

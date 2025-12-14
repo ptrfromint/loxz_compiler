@@ -595,6 +595,78 @@ pub const VirtualMachine = struct {
                     chunk = &frame.closure.kind.closure.function.kind.function.chunk;
                     ip = frame.ip;
                 },
+                .inherit => {
+                    const super_class = switch (self.stack.items[self.stack.items.len - 2]) {
+                        .obj => |obj| switch (obj.kind) {
+                            .class => |*class| class,
+                            else => return self.runtimeError("Tried to inherit non-class: {s}", .{@tagName(obj.kind)}),
+                        },
+                        else => return self.runtimeError("Tried to inherit non-class", .{}),
+                    };
+
+                    const sub_class = switch (self.stack.getLast()) {
+                        .obj => |obj| switch (obj.kind) {
+                            .class => |*class| class,
+                            else => return self.runtimeError("Tried to inherit non-class: {s}", .{@tagName(obj.kind)}),
+                        },
+                        else => return self.runtimeError("Tried to inherit non-class", .{}),
+                    };
+
+                    var iter = super_class.methods.iterator();
+                    while (iter.next()) |entry| {
+                        try sub_class.methods.put(entry.key_ptr.*, entry.value_ptr.*);
+                    }
+
+                    _ = self.stack.pop(); // Pop subclass off of the stack
+                },
+                .get_super => {
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const str = chunk.constants.items[index];
+                    const method_name = switch (str.obj.kind) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
+
+                    const super_class = switch (self.stack.pop().?) {
+                        .obj => |obj| switch (obj.kind) {
+                            .class => |*class| class,
+                            else => return self.runtimeError("Tried to get super on non-class: {s}", .{@tagName(obj.kind)}),
+                        },
+                        else => return self.runtimeError("Tried to get super non-class", .{}),
+                    };
+
+                    try super_class.bindMethod(self, method_name);
+                },
+                .invoke_super => {
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const str = chunk.constants.items[index];
+                    const method_name = switch (str.obj.kind) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
+
+                    const arg_count: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const super_class = switch (self.stack.pop().?) {
+                        .obj => |obj| switch (obj.kind) {
+                            .class => |*class| class,
+                            else => return self.runtimeError("Tried to get super on non-class: {s}", .{@tagName(obj.kind)}),
+                        },
+                        else => return self.runtimeError("Tried to get super non-class", .{}),
+                    };
+
+                    frame.ip = ip;
+                    try super_class.invoke(self, method_name, arg_count);
+
+                    frame = &self.call_stack.items[self.call_stack.items.len - 1];
+                    chunk = &frame.closure.kind.closure.function.kind.function.chunk;
+                    ip = frame.ip;
+                },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
                 },
