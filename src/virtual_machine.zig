@@ -130,6 +130,11 @@ pub const VirtualMachine = struct {
             .class => {
                 const instance = try Value.Obj.allocInstance(allocator, &self.objects, callee);
                 self.stack.items[self.stack.items.len - arg_count - 1] = .{ .obj = instance };
+                if (callee.kind.class.methods.get("init")) |init_method| {
+                    return try self.call(init_method.obj, arg_count);
+                } else if (arg_count != 0) {
+                    return self.runtimeError("Expected 0 arguments, but got {}.", .{arg_count});
+                }
             },
             .bound_method => {
                 const bound = callee.kind.bound_method;
@@ -323,7 +328,7 @@ pub const VirtualMachine = struct {
                                 },
                                 else => return self.runtimeError("Can't multiply/add {s} with {s}.", .{ @tagName(obj_a.kind), @tagName(b.?) }),
                             },
-                            else => return self.runtimeError("Binary operation called on string and non-string", .{}),
+                            else => return self.runtimeError("Binary operation called on string and {s}", .{@tagName(b.?)}),
                         },
                         else => return self.runtimeError("Binary opeartion called on non-number or non-string.", .{}),
                     }
@@ -570,6 +575,26 @@ pub const VirtualMachine = struct {
 
                     try self.defineMethod(method_name);
                 },
+                .invoke => {
+                    const index: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    const str = chunk.constants.items[index];
+                    const method_name = switch (str.obj.kind) {
+                        .string => |s| s.str,
+                        else => unreachable,
+                    };
+
+                    const arg_count: usize = @intCast(chunk.code.items[ip]);
+                    ip += 1;
+
+                    frame.ip = ip;
+                    try self.invoke(method_name, arg_count);
+
+                    frame = &self.call_stack.items[self.call_stack.items.len - 1];
+                    chunk = &frame.closure.kind.closure.function.kind.function.chunk;
+                    ip = frame.ip;
+                },
                 .false => {
                     try self.stack.append(allocator, .{ .boolean = false });
                 },
@@ -738,6 +763,27 @@ pub const VirtualMachine = struct {
 
             self.open_upvalues = upvalue.kind.upvalue.next;
         }
+    }
+
+    fn invoke(self: *VirtualMachine, method: []const u8, arg_count: usize) !void {
+        const receiver = switch (self.stack.items[self.stack.items.len - arg_count - 1]) {
+            .obj => |obj| obj,
+            else => return self.runtimeError("Only instances can have methods.", .{}),
+        };
+
+        if (receiver.kind != .instance) {
+            return self.runtimeError("Only instances can have methods.", .{});
+        }
+
+        if (receiver.kind.instance.fields.get(method)) |field_value| {
+            self.stack.items[self.stack.items.len - arg_count - 1] = field_value;
+            switch (field_value) {
+                .obj => |obj| return try self.callValue(obj, arg_count),
+                else => return self.runtimeError("Can only call functions! Can't call a {s}", .{@tagName(field_value)}),
+            }
+        }
+
+        return try receiver.kind.instance.class.kind.class.invoke(self, method, arg_count);
     }
 };
 

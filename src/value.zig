@@ -97,6 +97,17 @@ pub const Value = union(enum) {
 
                 return vm.runtimeError("Undefined property {s} on {f}", .{ name, self.name.* });
             }
+
+            pub fn invoke(self: *Class, vm: *VirtualMachine, name: []const u8, arg_count: usize) !void {
+                if (self.methods.get(name)) |value| {
+                    return vm.call(value.obj, arg_count);
+                }
+
+                return vm.runtimeError(
+                    "Undefined property '{s}' on class '{s}'",
+                    .{ name, self.name.kind.string.str },
+                );
+            }
         };
 
         pub const Instance = struct {

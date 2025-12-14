@@ -1,16 +1,24 @@
-class Nested {
-    method(n) {
-        fun function(n) {
-            if (n <= 1) return n;
+class CoffeeMaker {
+	init() {
+		this.coffee = nil;
+	}
 
-            return function(n - 1) + function(n - 2);
-        }
+	brew(coffee) {
+		print "Brewing some " + coffee + "...";
+		this.coffee = coffee;
+	}
 
-        return function(n);
-    }
+	drink() {
+		if (this.coffee) {
+			print "Mmm, this " + this.coffee + " is great!";
+			this.coffee = nil;
+		} else {
+			print "Drink what? There's nothing in the cup!";
+		}
+	}
 }
 
-var nested = Nested();
-for (var i = 0; i <= 30; i = i + 1) {
-    print nested.method(i);
-}
+var coffee_maker = CoffeeMaker();
+coffee_maker.brew("Espresso");
+coffee_maker.drink();
+coffee_maker.drink();

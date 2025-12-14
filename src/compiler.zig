@@ -19,7 +19,7 @@ pub const CallFrame = struct {
     slot_start: usize,
 };
 
-const FunctionType = enum { function, script, method };
+const FunctionType = enum { function, script, method, initializer };
 
 pub const FunctionState = struct {
     pub const Local = struct {
@@ -208,7 +208,12 @@ pub const Compiler = struct {
     }
 
     fn emitReturn(self: *Compiler) !void {
-        try self.emitBytes(&.{ @intFromEnum(Opcode.nil), @intFromEnum(Opcode.@"return") });
+        switch (self.current_function.func_type) {
+            .initializer => try self.emitBytes(&.{ @intFromEnum(Opcode.get_local), 0 }),
+            else => try self.emitBytes(&.{@intFromEnum(Opcode.nil)}),
+        }
+
+        try self.emitBytes(&.{@intFromEnum(Opcode.@"return")});
     }
 
     fn declaration(self: *Compiler) CompilerErrorSet!void {
@@ -322,7 +327,11 @@ pub const Compiler = struct {
         try self.parser.consume(.identifier, "Expected method name.");
         const name_index = try self.identifierConstant(self.parser.previous.?);
 
-        try self.function(.method);
+        if (std.mem.eql(u8, self.parser.previous.?.lexeme, "init")) {
+            try self.function(.initializer);
+        } else {
+            try self.function(.method);
+        }
 
         try self.emitBytes(&.{ @intFromEnum(Opcode.method), @truncate(name_index) });
     }
@@ -351,7 +360,7 @@ pub const Compiler = struct {
                 .name = .{ .lexeme = "", .line = 0, .type = .identifier },
                 .depth = 0,
             }),
-            .method => try self.current_function.locals.append(allocator, .{
+            .method, .initializer => try self.current_function.locals.append(allocator, .{
                 .name = .{ .lexeme = "this", .line = 0, .type = .identifier },
                 .depth = 0,
             }),
@@ -397,6 +406,10 @@ pub const Compiler = struct {
         if (try self.match(.semicolon)) {
             try self.emitReturn();
         } else {
+            if (self.current_function.func_type == .initializer) {
+                return debug.errorAt(self.parser.previous.?, "Can't return a value from an initializer.");
+            }
+
             try self.expression();
             try self.parser.consume(.semicolon, "Expected ';' after return value.");
             try self.emitBytes(&.{@intFromEnum(Opcode.@"return")});
@@ -696,6 +709,13 @@ pub const Compiler = struct {
         if (can_assign and try self.match(.equal)) {
             try self.expression();
             try self.emitBytes(&.{ @intFromEnum(Opcode.set_property), @truncate(name_index) });
+        } else if (try self.match(.left_paren)) {
+            const arg_count = try self.argumentList();
+            try self.emitBytes(&.{
+                @intFromEnum(Opcode.invoke),
+                @truncate(name_index),
+                @truncate(arg_count),
+            });
         } else {
             try self.emitBytes(&.{ @intFromEnum(Opcode.get_property), @truncate(name_index) });
         }
