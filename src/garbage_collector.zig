@@ -199,11 +199,11 @@ pub const GarbageCollector = struct {
             },
             .class => |class| {
                 try self.markObject(class.name);
-                try self.markHashmap(class.methods);
+                try self.markObjHashMap(class.methods);
             },
             .instance => |*inst| {
                 try self.markObject(inst.class);
-                try self.markHashmap(inst.fields);
+                try self.markObjHashMap(inst.fields);
             },
             .bound_method => |*bm| {
                 try self.markValue(bm.receiver);
@@ -214,12 +214,13 @@ pub const GarbageCollector = struct {
         }
     }
 
-    /// Helper to mark the values of a std.StringHashMap(Value)
-    pub fn markHashmap(self: *GarbageCollector, hashmap: std.StringHashMap(Value)) !void {
-        var iter = hashmap.valueIterator();
+    /// Helper to mark the keys and values of a HashMap(*Value.Obj, Value)
+    pub fn markObjHashMap(self: *GarbageCollector, hashmap: std.HashMap(*Value.Obj, Value, Value.ObjStringContext, std.hash_map.default_max_load_percentage)) !void {
+        var iter = hashmap.iterator();
 
-        while (iter.next()) |value| {
-            try self.markValue(value.*);
+        while (iter.next()) |entry| {
+            try self.markObject(entry.key_ptr.*);
+            try self.markValue(entry.value_ptr.*);
         }
     }
 

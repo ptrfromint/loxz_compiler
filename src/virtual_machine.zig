@@ -9,6 +9,7 @@ const Compiler = @import("compiler.zig").Compiler;
 const GarbageCollector = @import("garbage_collector.zig").GarbageCollector;
 const util = @import("util.zig");
 const Value = @import("value.zig").Value;
+const ValueMap = @import("value.zig").ValueMap;
 
 pub const InterpreterError = error{
     CompilationError,
@@ -19,8 +20,9 @@ pub const InterpreterError = error{
 pub const VirtualMachine = struct {
     call_stack: std.ArrayList(CallFrame),
     stack: std.ArrayList(Value),
-    globals: std.StringHashMap(Value),
+    globals: ValueMap,
     open_upvalues: ?*Value.Obj = null,
+    init_string: ?*Value.Obj = null,
 
     /// The head of the linked list of all allocated objects.
     /// The VM owns this list and is responsible for freeing it on deinit.
@@ -64,7 +66,13 @@ pub const VirtualMachine = struct {
         // Mark Global variables
         var it = self.globals.iterator();
         while (it.next()) |entry| {
+            try gc.markObject(entry.key_ptr.*);
             try gc.markValue(entry.value_ptr.*);
+        }
+
+        // Mark init string
+        if (self.init_string) |str| {
+            try gc.markObject(str);
         }
 
         // Mark Call Frames (specifically the closures they are executing)
@@ -83,12 +91,15 @@ pub const VirtualMachine = struct {
     pub fn interpret(self: *VirtualMachine, source: []const u8) InterpreterError!void {
         const allocator = self.allocator;
 
-        try self.defineNativeFunction("clock", nativeClock);
-
         // We assume the allocator passed to init() is our GarbageCollector.
         // We register the compiler with it so that objects created during compilation
         // (but not yet assigned to the VM) are not collected.
         const gc: *GarbageCollector = @ptrCast(@alignCast(allocator.ptr));
+
+        // Create the init string
+        self.init_string = try Value.Obj.allocString(allocator, &self.objects, "init");
+
+        try self.defineNativeFunction("clock", nativeClock);
 
         var compiler: Compiler = try .init(allocator, &self.objects, source);
         defer compiler.deinit();
@@ -130,7 +141,7 @@ pub const VirtualMachine = struct {
             .class => {
                 const instance = try Value.Obj.allocInstance(allocator, &self.objects, callee);
                 self.stack.items[self.stack.items.len - arg_count - 1] = .{ .obj = instance };
-                if (callee.kind.class.methods.get("init")) |init_method| {
+                if (callee.kind.class.methods.get(self.init_string.?)) |init_method| {
                     return try self.call(init_method.obj, arg_count);
                 } else if (arg_count != 0) {
                     return self.runtimeError("Expected 0 arguments, but got {}.", .{arg_count});
@@ -352,25 +363,20 @@ pub const VirtualMachine = struct {
                     };
                     const global = chunk.constants.items[index];
 
-                    const name = switch (global.obj.kind) {
-                        .string => |s| s.str,
-                        else => unreachable,
-                    };
-
                     switch (instr) {
                         .make_global, .make_global_long => {
                             if (self.stack.pop()) |val| {
-                                try self.globals.put(name, val);
+                                try self.globals.put(global.obj, val);
                             } else return self.runtimeError("Called make global with no value in the stack for it.", .{});
                         },
                         else => {
-                            if (!self.globals.contains(name)) {
-                                return self.runtimeError("Undefined variable \"{s}\".", .{name});
+                            if (!self.globals.contains(global.obj)) {
+                                return self.runtimeError("Undefined variable \"{s}\".", .{global.obj.kind.string.str});
                             }
 
                             switch (instr) {
-                                .get_global, .get_global_long => try self.stack.append(allocator, self.globals.get(name).?),
-                                else => try self.globals.put(name, self.stack.getLast()),
+                                .get_global, .get_global_long => try self.stack.append(allocator, self.globals.get(global.obj).?),
+                                else => try self.globals.put(global.obj, self.stack.getLast()),
                             }
                         },
                     }
@@ -525,16 +531,11 @@ pub const VirtualMachine = struct {
                     ip += 1;
 
                     const str = chunk.constants.items[index];
-                    const field_name = switch (str.obj.kind) {
-                        .string => |s| s.str,
-                        else => unreachable,
-                    };
-
-                    if (instance.fields.get(field_name)) |value| {
+                    if (instance.fields.get(str.obj)) |value| {
                         _ = self.stack.pop(); // Pop the instance
                         try self.stack.append(allocator, value);
                     } else {
-                        try instance.class.kind.class.bindMethod(self, field_name);
+                        try instance.class.kind.class.bindMethod(self, str.obj);
                     }
                 },
                 .set_property => {
@@ -552,12 +553,8 @@ pub const VirtualMachine = struct {
                     ip += 1;
 
                     const str = chunk.constants.items[index];
-                    const field_name = switch (str.obj.kind) {
-                        .string => |s| s.str,
-                        else => unreachable,
-                    };
 
-                    try instance.fields.put(field_name, self.stack.getLast());
+                    try instance.fields.put(str.obj, self.stack.getLast());
 
                     const value = self.stack.pop() orelse return self.runtimeError("Popped stack with no values", .{});
                     _ = self.stack.pop(); // Pop the instance
@@ -568,28 +565,19 @@ pub const VirtualMachine = struct {
                     ip += 1;
 
                     const str = chunk.constants.items[index];
-                    const method_name = switch (str.obj.kind) {
-                        .string => |s| s.str,
-                        else => unreachable,
-                    };
-
-                    try self.defineMethod(method_name);
+                    try self.defineMethod(str.obj);
                 },
                 .invoke => {
                     const index: usize = @intCast(chunk.code.items[ip]);
                     ip += 1;
 
                     const str = chunk.constants.items[index];
-                    const method_name = switch (str.obj.kind) {
-                        .string => |s| s.str,
-                        else => unreachable,
-                    };
 
                     const arg_count: usize = @intCast(chunk.code.items[ip]);
                     ip += 1;
 
                     frame.ip = ip;
-                    try self.invoke(method_name, arg_count);
+                    try self.invoke(str.obj, arg_count);
 
                     frame = &self.call_stack.items[self.call_stack.items.len - 1];
                     chunk = &frame.closure.kind.closure.function.kind.function.chunk;
@@ -624,10 +612,6 @@ pub const VirtualMachine = struct {
                     ip += 1;
 
                     const str = chunk.constants.items[index];
-                    const method_name = switch (str.obj.kind) {
-                        .string => |s| s.str,
-                        else => unreachable,
-                    };
 
                     const super_class = switch (self.stack.pop().?) {
                         .obj => |obj| switch (obj.kind) {
@@ -637,17 +621,13 @@ pub const VirtualMachine = struct {
                         else => return self.runtimeError("Tried to get super non-class", .{}),
                     };
 
-                    try super_class.bindMethod(self, method_name);
+                    try super_class.bindMethod(self, str.obj);
                 },
                 .invoke_super => {
                     const index: usize = @intCast(chunk.code.items[ip]);
                     ip += 1;
 
                     const str = chunk.constants.items[index];
-                    const method_name = switch (str.obj.kind) {
-                        .string => |s| s.str,
-                        else => unreachable,
-                    };
 
                     const arg_count: usize = @intCast(chunk.code.items[ip]);
                     ip += 1;
@@ -661,7 +641,7 @@ pub const VirtualMachine = struct {
                     };
 
                     frame.ip = ip;
-                    try super_class.invoke(self, method_name, arg_count);
+                    try super_class.invoke(self, str.obj, arg_count);
 
                     frame = &self.call_stack.items[self.call_stack.items.len - 1];
                     chunk = &frame.closure.kind.closure.function.kind.function.chunk;
@@ -713,7 +693,7 @@ pub const VirtualMachine = struct {
         }
     }
 
-    fn defineMethod(self: *VirtualMachine, name: []const u8) !void {
+    fn defineMethod(self: *VirtualMachine, name: *Value.Obj) !void {
         const class_value = self.stack.items[self.stack.items.len - 2];
 
         const class = switch (class_value) {
@@ -794,9 +774,10 @@ pub const VirtualMachine = struct {
         func: Value.Obj.NativeFunction.Ptr,
     ) !void {
         const allocator = self.allocator;
+        const name_obj = try Value.Obj.allocString(allocator, &self.objects, name);
         const native_fn = try Value.Obj.allocNativeFn(allocator, &self.objects, func);
 
-        try self.globals.put(name, .{ .obj = native_fn });
+        try self.globals.put(name_obj, .{ .obj = native_fn });
     }
 
     fn captureUpvalue(self: *VirtualMachine, allocator: std.mem.Allocator, slot_index: usize) !*Value.Obj {
@@ -837,7 +818,7 @@ pub const VirtualMachine = struct {
         }
     }
 
-    fn invoke(self: *VirtualMachine, method: []const u8, arg_count: usize) !void {
+    fn invoke(self: *VirtualMachine, method: *Value.Obj, arg_count: usize) !void {
         const receiver = switch (self.stack.items[self.stack.items.len - arg_count - 1]) {
             .obj => |obj| obj,
             else => return self.runtimeError("Only instances can have methods.", .{}),

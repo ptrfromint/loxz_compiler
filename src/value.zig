@@ -3,7 +3,26 @@ const std = @import("std");
 const Chunk = @import("bytecode.zig").Chunk;
 const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
 
+pub const ValueMap = std.HashMap(
+    *Value.Obj,
+    Value,
+    Value.ObjStringContext,
+    std.hash_map.default_max_load_percentage,
+);
+
 pub const Value = union(enum) {
+    pub const ObjStringContext = struct {
+        pub fn hash(self: ObjStringContext, key: *Value.Obj) u64 {
+            _ = self;
+            return std.hash.Wyhash.hash(0, key.kind.string.str);
+        }
+
+        pub fn eql(self: ObjStringContext, key1: *Value.Obj, key2: *Value.Obj) bool {
+            _ = self;
+            return std.mem.eql(u8, key1.kind.string.str, key2.kind.string.str);
+        }
+    };
+
     pub const Obj = struct {
         kind: Kind,
         is_marked: bool = false,
@@ -35,7 +54,7 @@ pub const Value = union(enum) {
                         try w.print("Instance of {f}:\n", .{inst.class});
                         var iter = inst.fields.iterator();
                         while (iter.next()) |entry| {
-                            try w.print("{s}: {f}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                            try w.print("{s}: {f}\n", .{ entry.key_ptr.*.kind.string.str, entry.value_ptr.* });
                         }
                     },
                     .bound_method => |bm| {
@@ -75,12 +94,12 @@ pub const Value = union(enum) {
 
         pub const Class = struct {
             name: *Value.Obj,
-            methods: std.StringHashMap(Value),
+            methods: ValueMap,
 
             pub fn bindMethod(
                 self: *Class,
                 vm: *VirtualMachine,
-                name: []const u8,
+                name: *Value.Obj,
             ) !void {
                 if (self.methods.get(name)) |method_val| {
                     const method = try Value.Obj.allocBoundMethod(
@@ -95,24 +114,24 @@ pub const Value = union(enum) {
                     return;
                 }
 
-                return vm.runtimeError("Undefined property {s} on {f}", .{ name, self.name.* });
+                return vm.runtimeError("Undefined property {s} on {f}", .{ name.kind.string.str, self.name.* });
             }
 
-            pub fn invoke(self: *Class, vm: *VirtualMachine, name: []const u8, arg_count: usize) !void {
+            pub fn invoke(self: *Class, vm: *VirtualMachine, name: *Value.Obj, arg_count: usize) !void {
                 if (self.methods.get(name)) |value| {
                     return vm.call(value.obj, arg_count);
                 }
 
                 return vm.runtimeError(
                     "Undefined property '{s}' on class '{s}'",
-                    .{ name, self.name.kind.string.str },
+                    .{ name.kind.string.str, self.name.kind.string.str },
                 );
             }
         };
 
         pub const Instance = struct {
             class: *Value.Obj,
-            fields: std.StringHashMap(Value),
+            fields: ValueMap,
         };
 
         pub const BoundMethod = struct {
