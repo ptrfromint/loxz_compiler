@@ -41,14 +41,22 @@ pub const Opcode = enum(u8) {
     loop,
     call,
     closure,
+    closure_long,
     class,
+    class_long,
     get_property,
+    get_property_long,
     set_property,
+    set_property_long,
     method,
+    method_long,
     invoke,
+    invoke_long,
     inherit,
     get_super,
+    get_super_long,
     invoke_super,
+    invoke_super_long,
 };
 
 pub const LineRun = struct {

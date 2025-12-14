@@ -464,9 +464,15 @@ pub const VirtualMachine = struct {
                     chunk = &frame.closure.kind.closure.function.kind.function.chunk;
                     ip = frame.ip;
                 },
-                .closure => {
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                .closure, .closure_long => {
+                    const index: usize = switch (instr) {
+                        .closure => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .closure => 1,
+                        else => 3,
+                    };
                     const func = chunk.constants.items[index];
 
                     const closure = switch (func) {
@@ -503,9 +509,15 @@ pub const VirtualMachine = struct {
                     self.closeUpvalues(self.stack.items.len - 1);
                     _ = self.stack.pop();
                 },
-                .class => {
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                .class, .class_long => {
+                    const index: usize = switch (instr) {
+                        .class => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .class => 1,
+                        else => 3,
+                    };
 
                     const str = chunk.constants.items[index];
                     const name = switch (str.obj.kind) {
@@ -516,7 +528,7 @@ pub const VirtualMachine = struct {
                     const class = try Value.Obj.allocClass(allocator, &self.objects, name);
                     try self.stack.append(allocator, .{ .obj = class });
                 },
-                .get_property => {
+                .get_property, .get_property_long => {
                     const stack_value = self.stack.getLast();
 
                     const instance = switch (stack_value) {
@@ -527,8 +539,14 @@ pub const VirtualMachine = struct {
                         else => return self.runtimeError("Attempted to access property of non-instance", .{}),
                     };
 
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                    const index: usize = switch (instr) {
+                        .get_property => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .get_property => 1,
+                        else => 3,
+                    };
 
                     const str = chunk.constants.items[index];
                     if (instance.fields.get(str.obj)) |value| {
@@ -538,7 +556,7 @@ pub const VirtualMachine = struct {
                         try instance.class.kind.class.bindMethod(self, str.obj);
                     }
                 },
-                .set_property => {
+                .set_property, .set_property_long => {
                     const instance_value = self.stack.items[self.stack.items.len - 2];
 
                     const instance = switch (instance_value) {
@@ -549,8 +567,14 @@ pub const VirtualMachine = struct {
                         else => return self.runtimeError("Attempted to access property of non-instance", .{}),
                     };
 
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                    const index: usize = switch (instr) {
+                        .set_property => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .set_property => 1,
+                        else => 3,
+                    };
 
                     const str = chunk.constants.items[index];
 
@@ -560,16 +584,28 @@ pub const VirtualMachine = struct {
                     _ = self.stack.pop(); // Pop the instance
                     try self.stack.append(allocator, value);
                 },
-                .method => {
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                .method, .method_long => {
+                    const index: usize = switch (instr) {
+                        .method => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .method => 1,
+                        else => 3,
+                    };
 
                     const str = chunk.constants.items[index];
                     try self.defineMethod(str.obj);
                 },
-                .invoke => {
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                .invoke, .invoke_long => {
+                    const index: usize = switch (instr) {
+                        .invoke => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .invoke => 1,
+                        else => 3,
+                    };
 
                     const str = chunk.constants.items[index];
 
@@ -607,9 +643,15 @@ pub const VirtualMachine = struct {
 
                     _ = self.stack.pop(); // Pop subclass off of the stack
                 },
-                .get_super => {
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                .get_super, .get_super_long => {
+                    const index: usize = switch (instr) {
+                        .get_super => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .get_super => 1,
+                        else => 3,
+                    };
 
                     const str = chunk.constants.items[index];
 
@@ -623,9 +665,15 @@ pub const VirtualMachine = struct {
 
                     try super_class.bindMethod(self, str.obj);
                 },
-                .invoke_super => {
-                    const index: usize = @intCast(chunk.code.items[ip]);
-                    ip += 1;
+                .invoke_super, .invoke_super_long => {
+                    const index: usize = switch (instr) {
+                        .invoke_super => @intCast(chunk.code.items[ip]),
+                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    };
+                    ip += switch (instr) {
+                        .invoke_super => 1,
+                        else => 3,
+                    };
 
                     const str = chunk.constants.items[index];
 

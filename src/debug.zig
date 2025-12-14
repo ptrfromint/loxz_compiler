@@ -84,7 +84,7 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
             std.debug.print("{s}slot {d}{s}\n", .{ Color.Magenta, index, Color.Reset });
             return offset + 2;
         },
-        .class, .get_property, .set_property => {
+        .class, .get_property, .set_property, .method, .get_super => {
             if (offset + 1 >= code_len) @panic("truncated instruction");
             const index = chunk.code.items[offset + 1];
             const val = chunk.constants.items[@intCast(index)];
@@ -93,6 +93,16 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
             printValue(val);
             std.debug.print("\n", .{});
             return offset + 2;
+        },
+        .class_long, .get_property_long, .set_property_long, .method_long, .get_super_long => {
+            if (offset + 3 >= code_len) @panic("truncated instruction");
+            const index = util.readU24LE(chunk.code.items[offset + 1 .. offset + 4]);
+            const val = chunk.constants.items[index];
+
+            std.debug.print("{s}[{d}]{s} ", .{ Color.Cyan, index, Color.Reset });
+            printValue(val);
+            std.debug.print("\n", .{});
+            return offset + 4;
         },
         .get_local_long, .set_local_long => {
             if (offset + 3 >= code_len) @panic("truncated instruction");
@@ -106,6 +116,28 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
             std.debug.print("{d} args\n", .{arg_count});
             return offset + 2;
         },
+        .invoke, .invoke_super => {
+            if (offset + 2 >= code_len) @panic("truncated instruction");
+            const index = chunk.code.items[offset + 1];
+            const arg_count = chunk.code.items[offset + 2];
+            const val = chunk.constants.items[index];
+
+            std.debug.print("({d} args) {s}[{d}]{s} ", .{ arg_count, Color.Cyan, index, Color.Reset });
+            printValue(val);
+            std.debug.print("\n", .{});
+            return offset + 3;
+        },
+        .invoke_long, .invoke_super_long => {
+            if (offset + 4 >= code_len) @panic("truncated instruction");
+            const index = util.readU24LE(chunk.code.items[offset + 1 .. offset + 4]);
+            const arg_count = chunk.code.items[offset + 4];
+            const val = chunk.constants.items[index];
+
+            std.debug.print("({d} args) {s}[{d}]{s} ", .{ arg_count, Color.Cyan, index, Color.Reset });
+            printValue(val);
+            std.debug.print("\n", .{});
+            return offset + 5;
+        },
         .closure => {
             if (offset + 1 >= code_len) @panic("truncated instruction");
             const index = chunk.code.items[offset + 1];
@@ -118,6 +150,30 @@ fn printInstruction(chunk: *const Chunk, offset: usize) !usize {
             const function = val.obj.kind.function;
             var i: usize = 0;
             var current_offset = offset + 2;
+            while (i < function.upvalue_count) : (i += 1) {
+                const is_local = chunk.code.items[current_offset];
+                const upvalue_index = chunk.code.items[current_offset + 1];
+                std.debug.print("{:0>4}      |                     {s} {d}\n", .{
+                    current_offset,
+                    if (is_local == 1) "local" else "upvalue",
+                    upvalue_index,
+                });
+                current_offset += 2;
+            }
+            return current_offset;
+        },
+        .closure_long => {
+            if (offset + 3 >= code_len) @panic("truncated instruction");
+            const index = util.readU24LE(chunk.code.items[offset + 1 .. offset + 4]);
+            const val = chunk.constants.items[index];
+
+            std.debug.print("{s}[{d}]{s} ", .{ Color.Cyan, index, Color.Reset });
+            printValue(val);
+            std.debug.print("\n", .{});
+
+            const function = val.obj.kind.function;
+            var i: usize = 0;
+            var current_offset = offset + 4;
             while (i < function.upvalue_count) : (i += 1) {
                 const is_local = chunk.code.items[current_offset];
                 const upvalue_index = chunk.code.items[current_offset + 1];

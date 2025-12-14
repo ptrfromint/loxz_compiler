@@ -235,7 +235,13 @@ pub const Compiler = struct {
         const name_constant = try self.identifierConstant(self.parser.previous.?);
         try self.declareVariable();
 
-        try self.emitBytes(&.{ @intFromEnum(Opcode.class), @truncate(name_constant) });
+        if (name_constant <= std.math.maxInt(u8)) {
+            try self.emitBytes(&.{ @intFromEnum(Opcode.class), @truncate(name_constant) });
+        } else {
+            var bytes: [4]u8 = .{ @intFromEnum(Opcode.class_long), 0, 0, 0 };
+            util.fillU24LE(bytes[1..], name_constant);
+            try self.emitBytes(bytes[0..]);
+        }
         try self.defineVariable(name_constant);
 
         var class_state: ClassState = .{
@@ -354,7 +360,13 @@ pub const Compiler = struct {
             try self.function(.method);
         }
 
-        try self.emitBytes(&.{ @intFromEnum(Opcode.method), @truncate(name_index) });
+        if (name_index <= std.math.maxInt(u8)) {
+            try self.emitBytes(&.{ @intFromEnum(Opcode.method), @truncate(name_index) });
+        } else {
+            var bytes: [4]u8 = .{ @intFromEnum(Opcode.method_long), 0, 0, 0 };
+            util.fillU24LE(bytes[1..], name_index);
+            try self.emitBytes(bytes[0..]);
+        }
     }
 
     fn function(self: *Compiler, func_type: FunctionType) !void {
@@ -412,7 +424,13 @@ pub const Compiler = struct {
         self.current_function = prev_func;
 
         const index = try self.currentChunk().addConstant(.{ .obj = compiled_func });
-        try self.emitBytes(&.{ @intFromEnum(Opcode.closure), @truncate(index) });
+        if (index <= std.math.maxInt(u8)) {
+            try self.emitBytes(&.{ @intFromEnum(Opcode.closure), @truncate(index) });
+        } else {
+            var bytes: [4]u8 = .{ @intFromEnum(Opcode.closure_long), 0, 0, 0 };
+            util.fillU24LE(bytes[1..], index);
+            try self.emitBytes(bytes[0..]);
+        }
 
         for (func_state.upvalues.items) |upvalue| {
             try self.emitBytes(&.{ @intFromEnum(upvalue.capture_scope), @truncate(upvalue.index) });
@@ -743,17 +761,29 @@ pub const Compiler = struct {
         if (try self.match(.left_paren)) {
             const arg_count = try self.argumentList();
             try self.namedVariable(.synthetic("super"), false);
-            try self.emitBytes(&.{
-                @intFromEnum(Opcode.invoke_super),
-                @truncate(name_index),
-                arg_count,
-            });
+            if (name_index <= std.math.maxInt(u8)) {
+                try self.emitBytes(&.{
+                    @intFromEnum(Opcode.invoke_super),
+                    @truncate(name_index),
+                    arg_count,
+                });
+            } else {
+                var bytes: [5]u8 = .{ @intFromEnum(Opcode.invoke_super_long), 0, 0, 0, arg_count };
+                util.fillU24LE(bytes[1..], name_index);
+                try self.emitBytes(bytes[0..]);
+            }
         } else {
             try self.namedVariable(.synthetic("super"), false);
-            try self.emitBytes(&.{
-                @intFromEnum(Opcode.get_super),
-                @truncate(name_index),
-            });
+            if (name_index <= std.math.maxInt(u8)) {
+                try self.emitBytes(&.{
+                    @intFromEnum(Opcode.get_super),
+                    @truncate(name_index),
+                });
+            } else {
+                var bytes: [4]u8 = .{ @intFromEnum(Opcode.get_super_long), 0, 0, 0 };
+                util.fillU24LE(bytes[1..], name_index);
+                try self.emitBytes(bytes[0..]);
+            }
         }
     }
 
@@ -763,16 +793,34 @@ pub const Compiler = struct {
 
         if (can_assign and try self.match(.equal)) {
             try self.expression();
-            try self.emitBytes(&.{ @intFromEnum(Opcode.set_property), @truncate(name_index) });
+            if (name_index <= std.math.maxInt(u8)) {
+                try self.emitBytes(&.{ @intFromEnum(Opcode.set_property), @truncate(name_index) });
+            } else {
+                var bytes: [4]u8 = .{ @intFromEnum(Opcode.set_property_long), 0, 0, 0 };
+                util.fillU24LE(bytes[1..], name_index);
+                try self.emitBytes(bytes[0..]);
+            }
         } else if (try self.match(.left_paren)) {
             const arg_count = try self.argumentList();
-            try self.emitBytes(&.{
-                @intFromEnum(Opcode.invoke),
-                @truncate(name_index),
-                @truncate(arg_count),
-            });
+            if (name_index <= std.math.maxInt(u8)) {
+                try self.emitBytes(&.{
+                    @intFromEnum(Opcode.invoke),
+                    @truncate(name_index),
+                    @truncate(arg_count),
+                });
+            } else {
+                var bytes: [5]u8 = .{ @intFromEnum(Opcode.invoke_long), 0, 0, 0, arg_count };
+                util.fillU24LE(bytes[1..], name_index);
+                try self.emitBytes(bytes[0..]);
+            }
         } else {
-            try self.emitBytes(&.{ @intFromEnum(Opcode.get_property), @truncate(name_index) });
+            if (name_index <= std.math.maxInt(u8)) {
+                try self.emitBytes(&.{ @intFromEnum(Opcode.get_property), @truncate(name_index) });
+            } else {
+                var bytes: [4]u8 = .{ @intFromEnum(Opcode.get_property_long), 0, 0, 0 };
+                util.fillU24LE(bytes[1..], name_index);
+                try self.emitBytes(bytes[0..]);
+            }
         }
     }
 
