@@ -191,6 +191,106 @@ pub const VirtualMachine = struct {
         }
     }
 
+    fn readOperandIndex(chunk: *Chunk, ip: *usize, is_long: bool) usize {
+        if (is_long) {
+            const index = util.readU24LE(chunk.code.items[ip.* .. ip.* + 3]);
+            ip.* += 3;
+            return index;
+        } else {
+            const index = chunk.code.items[ip.*];
+            ip.* += 1;
+            return index;
+        }
+    }
+
+    fn performBinaryOp(self: *VirtualMachine, instr: Opcode) InterpreterError!void {
+        const allocator = self.allocator;
+        const b = self.stack.pop();
+        const a = self.stack.pop();
+
+        if (a == null or b == null) return self.runtimeError("Stack underflow during binary operation.", .{});
+
+        switch (a.?) {
+            .float => |val_a| switch (b.?) {
+                .float => |val_b| switch (instr) {
+                    .add => try self.stack.append(allocator, .{ .float = val_a + val_b }),
+                    .subtract => try self.stack.append(allocator, .{ .float = val_a - val_b }),
+                    .multiply => try self.stack.append(allocator, .{ .float = val_a * val_b }),
+                    .divide => if (val_b == 0) @panic("Can't divide by zero") else {
+                        try self.stack.append(allocator, .{ .float = val_a / val_b });
+                    },
+                    .less => try self.stack.append(allocator, .{ .boolean = val_a < val_b }),
+                    .greater => try self.stack.append(allocator, .{ .boolean = val_a > val_b }),
+                    else => unreachable,
+                },
+                .obj => |obj_b| switch (obj_b.kind) {
+                    .string => |str_b| switch (instr) {
+                        .add => {
+                            try self.stack.append(allocator, .{
+                                .obj = try concatStringWithNum(allocator, &self.objects, str_b, val_a),
+                            });
+                        },
+                        .multiply => try self.multiplyString(str_b, val_a),
+                        else => return self.runtimeError("Binary operation called on number and non-number/string", .{}),
+                    },
+                    else => return self.runtimeError("Binary operation called on number and non-number.", .{}),
+                },
+                else => return self.runtimeError("Binary operation called on number and non-number.", .{}),
+            },
+            .obj => |obj_a| switch (b.?) {
+                .obj => |obj_b| switch (instr) {
+                    .add => {
+                        switch (obj_a.kind) {
+                            .string => |str_a| switch (obj_b.kind) {
+                                .string => |str_b| {
+                                    const new_str = try concatStrings(allocator, &self.objects, str_a, str_b);
+                                    try self.stack.append(allocator, .{ .obj = new_str });
+                                },
+                                else => return self.runtimeError("Tried to add string and {s}", .{@tagName(obj_b.kind)}),
+                            },
+                            else => return self.runtimeError("Operands must be two numbers or two strings.", .{}),
+                        }
+                    },
+                    else => return self.runtimeError("Non-add operation called on two strings.", .{}),
+                },
+                .float => |val_b| switch (instr) {
+                    .multiply => {
+                        switch (obj_a.kind) {
+                            .string => |str_a| try self.multiplyString(str_a, val_b),
+                            else => return self.runtimeError("Can't multiply number with {s}.", .{@tagName(obj_a.kind)}),
+                        }
+                    },
+                    .add => switch (obj_a.kind) {
+                        .string => |str_a| {
+                            try self.stack.append(allocator, .{
+                                .obj = try concatStringWithNum(allocator, &self.objects, str_a, val_b),
+                            });
+                        },
+                        else => return self.runtimeError("Can't add string and {s}", .{@tagName(obj_a.kind)}),
+                    },
+                    else => return self.runtimeError("Can't multiply/add {s} with {s}.", .{ @tagName(obj_a.kind), @tagName(b.?) }),
+                },
+                else => return self.runtimeError("Binary operation called on string and {s}", .{@tagName(b.?)}),
+            },
+            else => return self.runtimeError("Binary opeartion called on non-number or non-string.", .{}),
+        }
+    }
+
+    fn multiplyString(self: *VirtualMachine, str: Value.Obj.String, num: f64) !void {
+        if (num == 0) @panic("Can't multiply strings by zero!");
+
+        const count = @as(usize, @intFromFloat(@round(num)));
+        const buf_len = str.str.len * count;
+        const buffer = try self.allocator.alloc(u8, buf_len);
+        for (0..buffer.len) |i| {
+            buffer[i] = str.str[i % str.str.len];
+        }
+
+        try self.stack.append(self.allocator, .{
+            .obj = try Value.Obj.allocString(self.allocator, &self.objects, buffer),
+        });
+    }
+
     pub fn run(self: *VirtualMachine) !void {
         const allocator = self.allocator;
 
@@ -253,114 +353,18 @@ pub const VirtualMachine = struct {
                         else => return self.runtimeError("'not' called on an invalid operand.", .{}),
                     }
                 },
-                .add, .subtract, .multiply, .divide, .less, .greater => {
-                    const b = self.stack.pop();
-                    const a = self.stack.pop();
-
-                    switch (a.?) {
-                        .float => |val_a| switch (b.?) {
-                            .float => |val_b| switch (instr) {
-                                .add => try self.stack.append(allocator, .{ .float = val_a + val_b }),
-                                .subtract => try self.stack.append(allocator, .{ .float = val_a - val_b }),
-                                .multiply => try self.stack.append(allocator, .{ .float = val_a * val_b }),
-                                .divide => if (val_b == 0) @panic("Can't divide by zero") else {
-                                    try self.stack.append(allocator, .{ .float = val_a / val_b });
-                                },
-                                .less => try self.stack.append(allocator, .{ .boolean = val_a < val_b }),
-                                .greater => try self.stack.append(allocator, .{ .boolean = val_a > val_b }),
-                                else => unreachable,
-                            },
-                            .obj => |obj_a| switch (obj_a.kind) {
-                                .string => |str_a| switch (instr) {
-                                    .add => {
-                                        try self.stack.append(allocator, .{
-                                            .obj = try concatStringWithNum(allocator, &self.objects, str_a, val_a),
-                                        });
-                                    },
-                                    .multiply => {
-                                        if (val_a == 0) @panic("Can't multiply strings by zero!");
-                                        const buf_len = str_a.str.len * @as(usize, @intFromFloat(@round(val_a)));
-                                        const buffer = try allocator.alloc(u8, buf_len);
-                                        for (0..buffer.len) |i| {
-                                            buffer[i] = str_a.str[i % str_a.str.len];
-                                        }
-
-                                        try self.stack.append(allocator, .{
-                                            .obj = try Value.Obj.allocString(allocator, &self.objects, buffer),
-                                        });
-                                    },
-                                    else => return self.runtimeError("Can only add/multiply string with number", .{}),
-                                },
-                                else => return self.runtimeError("Binary operation called on number and non-number/string", .{}),
-                            },
-                            else => return self.runtimeError("Binary operation called on number and non-number.", .{}),
-                        },
-                        .obj => |obj_a| switch (b.?) {
-                            .obj => |obj_b| switch (instr) {
-                                .add => {
-                                    switch (obj_a.kind) {
-                                        .string => |str_a| switch (obj_b.kind) {
-                                            .string => |str_b| {
-                                                const new_str = try concatStrings(allocator, &self.objects, str_a, str_b);
-                                                try self.stack.append(allocator, .{ .obj = new_str });
-                                            },
-                                            else => return self.runtimeError("Tried to add string and {s}", .{@tagName(obj_b.kind)}),
-                                        },
-                                        else => return self.runtimeError("Operands must be two numbers or two strings.", .{}),
-                                    }
-                                },
-                                else => return self.runtimeError("Non-add operation called on two strings.", .{}),
-                            },
-                            .float => |number| switch (instr) {
-                                .multiply => {
-                                    switch (obj_a.kind) {
-                                        .string => |str_a| {
-                                            if (number == 0) @panic("Can't multiply strings by zero!");
-                                            const buf_len = str_a.str.len * @as(usize, @intFromFloat(@round(number)));
-                                            const buffer = try allocator.alloc(u8, buf_len);
-                                            for (0..buffer.len) |i| {
-                                                buffer[i] = str_a.str[i % str_a.str.len];
-                                            }
-
-                                            try self.stack.append(allocator, .{
-                                                .obj = try Value.Obj.allocString(allocator, &self.objects, buffer),
-                                            });
-                                        },
-                                        else => return self.runtimeError("Can't multiply number with {s}.", .{@tagName(obj_a.kind)}),
-                                    }
-                                },
-                                .add => switch (obj_a.kind) {
-                                    .string => |str_a| {
-                                        try self.stack.append(allocator, .{
-                                            .obj = try concatStringWithNum(allocator, &self.objects, str_a, number),
-                                        });
-                                    },
-                                    else => return self.runtimeError("Can't add string and {s}", .{@tagName(obj_a.kind)}),
-                                },
-                                else => return self.runtimeError("Can't multiply/add {s} with {s}.", .{ @tagName(obj_a.kind), @tagName(b.?) }),
-                            },
-                            else => return self.runtimeError("Binary operation called on string and {s}", .{@tagName(b.?)}),
-                        },
-                        else => return self.runtimeError("Binary opeartion called on non-number or non-string.", .{}),
-                    }
-                },
-                .constant => {
-                    const const_index: usize = @intCast(chunk.code.items[ip]);
-                    const constant = chunk.constants.items[const_index];
+                .add, .subtract, .multiply, .divide, .less, .greater => try self.performBinaryOp(instr),
+                .constant, .constant_long => {
+                    const constant_index = readOperandIndex(chunk, &ip, instr == .constant_long);
+                    const constant = chunk.constants.items[constant_index];
                     try self.stack.append(allocator, constant);
-                    ip += 1;
-                },
-                .constant_long => {
-                    const const_index = util.readU24LE(chunk.code.items[ip .. ip + 3]);
-                    const constant = chunk.constants.items[const_index];
-                    try self.stack.append(allocator, constant);
-                    ip += 3;
                 },
                 .make_global, .get_global, .set_global, .make_global_long, .get_global_long, .set_global_long => {
-                    const index: usize = switch (instr) {
-                        .make_global, .get_global, .set_global => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    const is_long = switch (instr) {
+                        .make_global_long, .get_global_long, .set_global_long => true,
+                        else => false,
                     };
+                    const index = readOperandIndex(chunk, &ip, is_long);
                     const global = chunk.constants.items[index];
 
                     switch (instr) {
@@ -380,17 +384,13 @@ pub const VirtualMachine = struct {
                             }
                         },
                     }
-
-                    switch (instr) {
-                        .get_global, .set_global, .make_global => ip += 1,
-                        else => ip += 3,
-                    }
                 },
                 .get_local, .get_local_long, .set_local, .set_local_long => {
-                    const index: usize = switch (instr) {
-                        .get_local, .set_local => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    const is_long = switch (instr) {
+                        .get_local_long, .set_local_long => true,
+                        else => false,
                     };
+                    const index = readOperandIndex(chunk, &ip, is_long);
 
                     // Offset by the frame pointer
                     const slot = frame.slot_start + index;
@@ -399,31 +399,25 @@ pub const VirtualMachine = struct {
                         .get_local, .get_local_long => try self.stack.append(allocator, self.stack.items[slot]),
                         else => self.stack.items[slot] = self.stack.getLast(),
                     }
-
-                    switch (instr) {
-                        .get_local, .set_local => ip += 1,
-                        else => ip += 3,
-                    }
                 },
                 .get_upvalue, .set_upvalue, .get_upvalue_long, .set_upvalue_long => {
-                    const index: usize = switch (instr) {
-                        .get_upvalue, .set_upvalue => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
+                    const is_long = switch (instr) {
+                        .get_upvalue_long, .set_upvalue_long => true,
+                        else => false,
                     };
+                    const index = readOperandIndex(chunk, &ip, is_long);
 
                     const upvalue = frame.closure.kind.closure.upvalues.items[index];
 
-                    if (instr == .get_upvalue or instr == .get_upvalue_long) {
-                        const val = self.getUpvalue(upvalue);
-                        try self.stack.append(allocator, val);
-                    } else {
-                        const val = self.stack.getLast();
-                        self.setUpvalue(upvalue, val);
-                    }
-
                     switch (instr) {
-                        .get_upvalue, .set_upvalue => ip += 1,
-                        else => ip += 3,
+                        .get_upvalue, .get_upvalue_long => {
+                            const val = self.getUpvalue(upvalue);
+                            try self.stack.append(allocator, val);
+                        },
+                        else => {
+                            const val = self.stack.getLast();
+                            self.setUpvalue(upvalue, val);
+                        },
                     }
                 },
                 .jump_if_false => {
@@ -465,14 +459,7 @@ pub const VirtualMachine = struct {
                     ip = frame.ip;
                 },
                 .closure, .closure_long => {
-                    const index: usize = switch (instr) {
-                        .closure => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .closure => 1,
-                        else => 3,
-                    };
+                    const index = readOperandIndex(chunk, &ip, instr == .closure_long);
                     const func = chunk.constants.items[index];
 
                     const closure = switch (func) {
@@ -510,14 +497,7 @@ pub const VirtualMachine = struct {
                     _ = self.stack.pop();
                 },
                 .class, .class_long => {
-                    const index: usize = switch (instr) {
-                        .class => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .class => 1,
-                        else => 3,
-                    };
+                    const index = readOperandIndex(chunk, &ip, instr == .class_long);
 
                     const str = chunk.constants.items[index];
                     const name = switch (str.obj.kind) {
@@ -529,6 +509,8 @@ pub const VirtualMachine = struct {
                     try self.stack.append(allocator, .{ .obj = class });
                 },
                 .get_property, .get_property_long => {
+                    const index = readOperandIndex(chunk, &ip, instr == .get_property_long);
+
                     const stack_value = self.stack.getLast();
 
                     const instance = switch (stack_value) {
@@ -537,15 +519,6 @@ pub const VirtualMachine = struct {
                             else => return self.runtimeError("Attempted to access property of non-instance", .{}),
                         },
                         else => return self.runtimeError("Attempted to access property of non-instance", .{}),
-                    };
-
-                    const index: usize = switch (instr) {
-                        .get_property => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .get_property => 1,
-                        else => 3,
                     };
 
                     const str = chunk.constants.items[index];
@@ -557,6 +530,8 @@ pub const VirtualMachine = struct {
                     }
                 },
                 .set_property, .set_property_long => {
+                    const index = readOperandIndex(chunk, &ip, instr == .set_property_long);
+
                     const instance_value = self.stack.items[self.stack.items.len - 2];
 
                     const instance = switch (instance_value) {
@@ -565,15 +540,6 @@ pub const VirtualMachine = struct {
                             else => return self.runtimeError("Attempted to access property of non-instance", .{}),
                         },
                         else => return self.runtimeError("Attempted to access property of non-instance", .{}),
-                    };
-
-                    const index: usize = switch (instr) {
-                        .set_property => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .set_property => 1,
-                        else => 3,
                     };
 
                     const str = chunk.constants.items[index];
@@ -585,27 +551,12 @@ pub const VirtualMachine = struct {
                     try self.stack.append(allocator, value);
                 },
                 .method, .method_long => {
-                    const index: usize = switch (instr) {
-                        .method => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .method => 1,
-                        else => 3,
-                    };
-
+                    const index = readOperandIndex(chunk, &ip, instr == .method_long);
                     const str = chunk.constants.items[index];
                     try self.defineMethod(str.obj);
                 },
                 .invoke, .invoke_long => {
-                    const index: usize = switch (instr) {
-                        .invoke => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .invoke => 1,
-                        else => 3,
-                    };
+                    const index = readOperandIndex(chunk, &ip, instr == .invoke_long);
 
                     const str = chunk.constants.items[index];
 
@@ -644,15 +595,7 @@ pub const VirtualMachine = struct {
                     _ = self.stack.pop(); // Pop subclass off of the stack
                 },
                 .get_super, .get_super_long => {
-                    const index: usize = switch (instr) {
-                        .get_super => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .get_super => 1,
-                        else => 3,
-                    };
-
+                    const index = readOperandIndex(chunk, &ip, instr == .get_super_long);
                     const str = chunk.constants.items[index];
 
                     const super_class = switch (self.stack.pop().?) {
@@ -666,15 +609,7 @@ pub const VirtualMachine = struct {
                     try super_class.bindMethod(self, str.obj);
                 },
                 .invoke_super, .invoke_super_long => {
-                    const index: usize = switch (instr) {
-                        .invoke_super => @intCast(chunk.code.items[ip]),
-                        else => util.readU24LE(chunk.code.items[ip .. ip + 3]),
-                    };
-                    ip += switch (instr) {
-                        .invoke_super => 1,
-                        else => 3,
-                    };
-
+                    const index = readOperandIndex(chunk, &ip, instr == .invoke_super_long);
                     const str = chunk.constants.items[index];
 
                     const arg_count: usize = @intCast(chunk.code.items[ip]);
