@@ -88,6 +88,16 @@ pub const VirtualMachine = struct {
         }
     }
 
+    pub fn initRuntime(self: *VirtualMachine) !void {
+        if (self.init_string != null) return;
+
+        const allocator = self.allocator;
+        // Create the init string
+        self.init_string = try Value.Obj.allocString(allocator, &self.objects, "init");
+
+        try self.defineNativeFunction("clock", nativeClock);
+    }
+
     pub fn interpret(self: *VirtualMachine, source: []const u8) InterpreterError!void {
         const allocator = self.allocator;
 
@@ -96,10 +106,8 @@ pub const VirtualMachine = struct {
         // (but not yet assigned to the VM) are not collected.
         const gc: *GarbageCollector = @ptrCast(@alignCast(allocator.ptr));
 
-        // Create the init string
-        self.init_string = try Value.Obj.allocString(allocator, &self.objects, "init");
-
-        try self.defineNativeFunction("clock", nativeClock);
+        // Ensure runtime is initialized
+        self.initRuntime() catch return InterpreterError.OutOfMemory;
 
         var compiler: Compiler = try .init(allocator, &self.objects, source);
         defer compiler.deinit();

@@ -3,16 +3,38 @@ const std = @import("std");
 const GarbageCollector = @import("garbage_collector.zig").GarbageCollector;
 const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
 
-fn repl() !void {
-    var stdin = std.fs.File.stdin().reader(&.{});
-    var stdout = std.fs.File.stdout().writer(&.{});
+fn repl(allocator: std.mem.Allocator) !void {
+    var gc: GarbageCollector = .init(allocator);
+    defer gc.deinit();
 
-    var line: [1024]u8 = undefined;
-    while (true) {
-        try stdout.interface.print("> ", .{});
-        const read = try stdin.read(&line);
+    var vm: VirtualMachine = .init(gc.allocator());
+    defer vm.deinit();
 
-        std.debug.print("{s}", .{line[0..read]});
+    gc.vm = &vm;
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer_state = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_writer_state.interface;
+
+    var stdin_buf: [4096]u8 = undefined;
+    var stdin_reader_state = std.fs.File.stdin().reader(&stdin_buf);
+    const stdin = &stdin_reader_state.interface;
+
+    try stdout.print("> ", .{});
+    try stdout.flush();
+
+    while (stdin.takeDelimiterExclusive('\n')) |line| {
+        vm.interpret(line) catch |err| {
+            try stdout.print("Error: {}\n", .{err});
+        };
+        try stdout.print("> ", .{});
+        try stdout.flush();
+    } else |err| switch (err) {
+        error.EndOfStream => {
+            try stdout.print("\n", .{});
+            try stdout.flush();
+        },
+        else => return err,
     }
 }
 
@@ -41,7 +63,7 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len == 1) {
-        repl() catch |err| switch (err) {
+        repl(allocator) catch |err| switch (err) {
             error.EndOfStream => std.debug.print("\nGoodbye!\n", .{}),
             else => return err,
         };
